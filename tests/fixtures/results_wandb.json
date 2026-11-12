@@ -1,0 +1,1529 @@
+{
+ "schema": "robot-controllers/results-1",
+ "box": {
+  "slug": "jointtrajectory-to-servocommand",
+  "name": "JointTrajectory → ServoCommand",
+  "input": "JointTrajectory",
+  "output": "ServoCommand",
+  "wandb_project": "Controller · JointTrajectory to ServoCommand"
+ },
+ "generated": {
+  "commit": "101230a4f084",
+  "dirty": false,
+  "robot_msgs": "0.2.0 @ fixture",
+  "plant": "planar_arm",
+  "host": "fixture-host",
+  "python": "3.12.3",
+  "mujoco": "3.11.0",
+  "date": "2026-11-12"
+ },
+ "rungs": [
+  {
+   "id": "R1.FreeSpace",
+   "title": "Free-space motion",
+   "family": "free_space",
+   "order": 1,
+   "description": "Three min-jerk moves between tool points, 0.8 s each with 0.3 s rests. Tests plain tracking with feed-forward.",
+   "duration_s": 3.3,
+   "params": {
+    "move_s": 0.8,
+    "rest_s": 0.3
+   },
+   "timing": {
+    "rate_hz": 100.0,
+    "command_delay_s": 0.0055,
+    "reply_delay_s": 0.0015,
+    "jitter_s": 0.0,
+    "stalls": [],
+    "include_compute": true
+   },
+   "scene": {
+    "belt": false,
+    "belt_speed_m_s": 0.25,
+    "contact_stiffness_n_m": 100000.0,
+    "contact_damping_n_s_m": 200.0,
+    "pushes": [],
+    "payload_kg": 0.0,
+    "start_q": null,
+    "extras": {}
+   },
+   "gates": [
+    {
+     "metric": "missed_cycles",
+     "op": "==",
+     "value": 0.0,
+     "why": "the host never skipped a cycle"
+    },
+    {
+     "metric": "latency_p99_ms",
+     "op": "<=",
+     "value": 10.0,
+     "why": "sensor-to-command latency stays inside one host period"
+    },
+    {
+     "metric": "tracking_p95_deg",
+     "op": "<=",
+     "value": 1.0,
+     "why": "tracks the path within a degree"
+    },
+    {
+     "metric": "saturation_share",
+     "op": "<=",
+     "value": 2.0,
+     "why": "rarely at the torque cap"
+    },
+    {
+     "metric": "diverged",
+     "op": "==",
+     "value": 0.0,
+     "why": "nothing went non-finite"
+    },
+    {
+     "metric": "faults",
+     "op": "==",
+     "value": 0.0,
+     "why": "no board fault or abort"
+    }
+   ],
+   "objective": "tracking_p95_deg",
+   "minimize": true
+  },
+  {
+   "id": "R3.BeltImpact@0.10m/s",
+   "title": "Belt impact at 0.10 m/s",
+   "family": "contact",
+   "order": 4,
+   "description": "Straight down onto the moving belt at 0.10 m/s, dwell 0.8 s pressing, lift 40 mm. Tests the impact peak and the press.",
+   "duration_s": 2.4,
+   "params": {
+    "touch_speed_m_s": 0.1,
+    "dwell_s": 0.8,
+    "press_target_n": 10.0
+   },
+   "timing": {
+    "rate_hz": 100.0,
+    "command_delay_s": 0.0055,
+    "reply_delay_s": 0.0015,
+    "jitter_s": 0.0,
+    "stalls": [],
+    "include_compute": true
+   },
+   "scene": {
+    "belt": true,
+    "belt_speed_m_s": 0.25,
+    "contact_stiffness_n_m": 100000.0,
+    "contact_damping_n_s_m": 200.0,
+    "pushes": [],
+    "payload_kg": 0.0,
+    "start_q": null,
+    "extras": {}
+   },
+   "gates": [
+    {
+     "metric": "missed_cycles",
+     "op": "==",
+     "value": 0.0,
+     "why": "the host never skipped a cycle"
+    },
+    {
+     "metric": "latency_p99_ms",
+     "op": "<=",
+     "value": 10.0,
+     "why": "sensor-to-command latency stays inside one host period"
+    },
+    {
+     "metric": "contact_peak_n",
+     "op": "<=",
+     "value": 60.0,
+     "why": "the impact transient stays gentle"
+    },
+    {
+     "metric": "dwell_bounces",
+     "op": "==",
+     "value": 0.0,
+     "why": "never loses contact during the dwell"
+    },
+    {
+     "metric": "dwell_force_error_n",
+     "op": "<=",
+     "value": 10.0,
+     "why": "presses near the 10 N target"
+    },
+    {
+     "metric": "dwell_contact_fraction",
+     "op": ">=",
+     "value": 95.0,
+     "why": "in contact for the whole dwell"
+    },
+    {
+     "metric": "diverged",
+     "op": "==",
+     "value": 0.0,
+     "why": "nothing went non-finite"
+    }
+   ],
+   "objective": "contact_max_n",
+   "minimize": true
+  }
+ ],
+ "controllers": [
+  {
+   "name": "joint_trajectory_controller",
+   "title": "Joint trajectory controller",
+   "runs_on": "board",
+   "variant_of": null,
+   "summary": "Samples the trajectory at the time since it started.",
+   "prior_art": [
+    "ros2_control joint_trajectory_controller"
+   ],
+   "config": {
+    "path_tolerance_rad": null
+   }
+  },
+  {
+   "name": "joint_impedance_host",
+   "title": "Joint impedance on the host",
+   "runs_on": "host",
+   "variant_of": "joint_impedance_board",
+   "summary": "Computes the joint spring and damper on the host as a torque.",
+   "prior_art": [
+    "CRISP torque-mode impedance"
+   ],
+   "config": {
+    "location": "host",
+    "stiffness_nm_rad": [
+     40.0,
+     25.0
+    ],
+    "damping_ratio": 0.8,
+    "inertia_kg_m2": [
+     0.1,
+     0.03
+    ],
+    "damping_nm_s_rad": null,
+    "max_effort_nm": null
+   }
+  }
+ ],
+ "results": [
+  {
+   "controller": "joint_trajectory_controller",
+   "rung": "R1.FreeSpace",
+   "seed": 0,
+   "metrics": {
+    "tracking_rms_deg": 0.31,
+    "tracking_p95_deg": 0.62,
+    "tracking_max_deg": 0.94,
+    "tool_rms_mm": 1.2,
+    "tool_p95_mm": 2.4,
+    "final_error_deg": 0.05,
+    "settle_time_s": 0.12,
+    "touch_speed_m_s": null,
+    "contact_peak_n": null,
+    "contact_max_n": null,
+    "dwell_force_mean_n": null,
+    "dwell_force_std_n": null,
+    "dwell_force_error_n": null,
+    "dwell_bounces": null,
+    "dwell_contact_fraction": null,
+    "dwell_slip_mm": null,
+    "push_deflection_mm": null,
+    "push_recovery_s": null,
+    "push_overshoot_mm": null,
+    "command_jump_max_deg": 0.41,
+    "torque_rate_max_nm_s": 310.0,
+    "replan_settle_s": null,
+    "replans_accepted": 0,
+    "period_jitter_p50_ms": 0.0,
+    "period_jitter_p99_ms": 0.012,
+    "period_jitter_max_ms": 0.021,
+    "missed_cycles": 0,
+    "worst_stall_ms": 10.02,
+    "latency_p50_ms": 7.041,
+    "latency_p99_ms": 7.083,
+    "latency_max_ms": 7.102,
+    "stale_replies": 0,
+    "schedule_slip_ms": 0.0,
+    "watchdog_trips": 0,
+    "saturation_share": 0.0,
+    "faults": 0,
+    "diverged": 0,
+    "compute_us_p50": 8.1,
+    "compute_us_p99": 14.6,
+    "compute_us_max": 41.2,
+    "command_fields": 3.0,
+    "wire_bytes_per_tick": 28,
+    "host_rate_hz": 100.0,
+    "steps_done": null,
+    "steps_total": null,
+    "sequence_time_s": null,
+    "reached_error_deg": null
+   },
+   "gates": [
+    {
+     "metric": "missed_cycles",
+     "op": "==",
+     "value": 0.0,
+     "why": "the host never skipped a cycle",
+     "measured": 0.0,
+     "passed": true,
+     "note": ""
+    },
+    {
+     "metric": "latency_p99_ms",
+     "op": "<=",
+     "value": 10.0,
+     "why": "sensor-to-command latency stays inside one host period",
+     "measured": 7.083,
+     "passed": true,
+     "note": ""
+    },
+    {
+     "metric": "tracking_p95_deg",
+     "op": "<=",
+     "value": 1.0,
+     "why": "tracks the path within a degree",
+     "measured": 0.62,
+     "passed": true,
+     "note": ""
+    },
+    {
+     "metric": "saturation_share",
+     "op": "<=",
+     "value": 2.0,
+     "why": "rarely at the torque cap",
+     "measured": 0.0,
+     "passed": true,
+     "note": ""
+    },
+    {
+     "metric": "diverged",
+     "op": "==",
+     "value": 0.0,
+     "why": "nothing went non-finite",
+     "measured": 0.0,
+     "passed": true,
+     "note": ""
+    },
+    {
+     "metric": "faults",
+     "op": "==",
+     "value": 0.0,
+     "why": "no board fault or abort",
+     "measured": 0.0,
+     "passed": true,
+     "note": ""
+    }
+   ],
+   "passed": true,
+   "objective": 0.62,
+   "trace": {
+    "t": [
+     0.0,
+     0.005,
+     0.01,
+     0.015,
+     0.02,
+     0.025,
+     0.03,
+     0.035,
+     0.04,
+     0.045
+    ],
+    "q_deg.shoulder": [
+     10.0,
+     10.15,
+     10.8,
+     11.97,
+     13.66,
+     15.87,
+     18.62,
+     21.88,
+     25.66,
+     29.96
+    ],
+    "q_deg.elbow": [
+     -35.0,
+     -34.75,
+     -34.15,
+     -33.18,
+     -31.87,
+     -30.19,
+     -28.17,
+     -25.8,
+     -23.07,
+     -19.97
+    ],
+    "ref_deg.shoulder": [
+     10.0,
+     10.25,
+     10.99,
+     12.22,
+     13.95,
+     16.17,
+     18.89,
+     22.1,
+     25.8,
+     30.0
+    ],
+    "ref_deg.elbow": [
+     -35.0,
+     -34.81,
+     -34.26,
+     -33.33,
+     -32.04,
+     -30.37,
+     -28.33,
+     -25.93,
+     -23.15,
+     -20.0
+    ],
+    "err_deg.shoulder": [
+     0.0,
+     0.09816,
+     0.1855,
+     0.2524,
+     0.2916,
+     0.2986,
+     0.2728,
+     0.2169,
+     0.1372,
+     0.04234
+    ],
+    "err_deg.elbow": [
+     null,
+     -0.0589,
+     -0.1113,
+     -0.1515,
+     -0.1749,
+     -0.1792,
+     -0.1637,
+     -0.1302,
+     -0.08231,
+     -0.0254
+    ],
+    "tau_nm.shoulder": [
+     4.2,
+     4.5,
+     4.8,
+     5.1,
+     5.4,
+     5.7,
+     6.0,
+     6.3,
+     6.6,
+     6.9
+    ],
+    "tau_nm.elbow": [
+     1.1,
+     1.2,
+     1.3,
+     1.4,
+     1.5,
+     1.6,
+     1.7,
+     1.8,
+     1.9,
+     2.0
+    ],
+    "tool_x_mm": [
+     300.0,
+     301.5,
+     303.0,
+     304.5,
+     306.0,
+     307.5,
+     309.0,
+     310.5,
+     312.0,
+     313.5
+    ],
+    "tool_z_mm": [
+     250.0,
+     248.0,
+     246.0,
+     244.0,
+     242.0,
+     240.0,
+     238.0,
+     236.0,
+     234.0,
+     232.0
+    ],
+    "contact_t": [
+     0.0,
+     0.005,
+     0.01,
+     0.015,
+     0.02,
+     0.025,
+     0.03,
+     0.035,
+     0.04,
+     0.045
+    ],
+    "contact_fn_n": [
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0
+    ],
+    "tick_t": [
+     0.0,
+     0.01,
+     0.02,
+     0.03,
+     0.04
+    ],
+    "compute_us": [
+     41.2,
+     8.3,
+     8.1,
+     9.0,
+     8.2
+    ]
+   },
+   "events": [],
+   "wandb_url": null,
+   "wall_s": 1.234
+  },
+  {
+   "controller": "joint_trajectory_controller",
+   "rung": "R3.BeltImpact@0.10m/s",
+   "seed": 0,
+   "metrics": {
+    "tracking_rms_deg": 0.42,
+    "tracking_p95_deg": 0.81,
+    "tracking_max_deg": 1.37,
+    "tool_rms_mm": 1.6,
+    "tool_p95_mm": 3.1,
+    "final_error_deg": 0.07,
+    "settle_time_s": 0.15,
+    "touch_speed_m_s": 0.1,
+    "contact_peak_n": 48.3,
+    "contact_max_n": 51.7,
+    "dwell_force_mean_n": 12.4,
+    "dwell_force_std_n": 1.1,
+    "dwell_force_error_n": 2.4,
+    "dwell_bounces": 0,
+    "dwell_contact_fraction": 99.2,
+    "dwell_slip_mm": 0.8,
+    "push_deflection_mm": null,
+    "push_recovery_s": null,
+    "push_overshoot_mm": null,
+    "command_jump_max_deg": 0.22,
+    "torque_rate_max_nm_s": 1840.0,
+    "replan_settle_s": null,
+    "replans_accepted": 0,
+    "period_jitter_p50_ms": 0.0,
+    "period_jitter_p99_ms": 0.012,
+    "period_jitter_max_ms": 0.021,
+    "missed_cycles": 0,
+    "worst_stall_ms": 10.02,
+    "latency_p50_ms": 7.041,
+    "latency_p99_ms": 7.083,
+    "latency_max_ms": 7.102,
+    "stale_replies": 0,
+    "schedule_slip_ms": 0.0,
+    "watchdog_trips": 0,
+    "saturation_share": 0.0,
+    "faults": 0,
+    "diverged": 0,
+    "compute_us_p50": 8.2,
+    "compute_us_p99": 14.9,
+    "compute_us_max": 40.8,
+    "command_fields": 3.0,
+    "wire_bytes_per_tick": 28,
+    "host_rate_hz": 100.0,
+    "steps_done": null,
+    "steps_total": null,
+    "sequence_time_s": null,
+    "reached_error_deg": null
+   },
+   "gates": [
+    {
+     "metric": "missed_cycles",
+     "op": "==",
+     "value": 0.0,
+     "why": "the host never skipped a cycle",
+     "measured": 0.0,
+     "passed": true,
+     "note": ""
+    },
+    {
+     "metric": "latency_p99_ms",
+     "op": "<=",
+     "value": 10.0,
+     "why": "sensor-to-command latency stays inside one host period",
+     "measured": 7.083,
+     "passed": true,
+     "note": ""
+    },
+    {
+     "metric": "contact_peak_n",
+     "op": "<=",
+     "value": 60.0,
+     "why": "the impact transient stays gentle",
+     "measured": 48.3,
+     "passed": true,
+     "note": ""
+    },
+    {
+     "metric": "dwell_bounces",
+     "op": "==",
+     "value": 0.0,
+     "why": "never loses contact during the dwell",
+     "measured": 0.0,
+     "passed": true,
+     "note": ""
+    },
+    {
+     "metric": "dwell_force_error_n",
+     "op": "<=",
+     "value": 10.0,
+     "why": "presses near the 10 N target",
+     "measured": 2.4,
+     "passed": true,
+     "note": ""
+    },
+    {
+     "metric": "dwell_contact_fraction",
+     "op": ">=",
+     "value": 95.0,
+     "why": "in contact for the whole dwell",
+     "measured": 99.2,
+     "passed": true,
+     "note": ""
+    },
+    {
+     "metric": "diverged",
+     "op": "==",
+     "value": 0.0,
+     "why": "nothing went non-finite",
+     "measured": 0.0,
+     "passed": true,
+     "note": ""
+    }
+   ],
+   "passed": true,
+   "objective": 51.7,
+   "trace": {
+    "t": [
+     0.0,
+     0.005,
+     0.01,
+     0.015,
+     0.02,
+     0.025,
+     0.03,
+     0.035,
+     0.04,
+     0.045
+    ],
+    "q_deg.shoulder": [
+     10.0,
+     10.12,
+     10.74,
+     11.88,
+     13.56,
+     15.77,
+     18.53,
+     21.81,
+     25.62,
+     29.94
+    ],
+    "q_deg.elbow": [
+     -35.0,
+     -34.73,
+     -34.11,
+     -33.13,
+     -31.81,
+     -30.13,
+     -28.11,
+     -25.76,
+     -23.04,
+     -19.97
+    ],
+    "ref_deg.shoulder": [
+     10.0,
+     10.25,
+     10.99,
+     12.22,
+     13.95,
+     16.17,
+     18.89,
+     22.1,
+     25.8,
+     30.0
+    ],
+    "ref_deg.elbow": [
+     -35.0,
+     -34.81,
+     -34.26,
+     -33.33,
+     -32.04,
+     -30.37,
+     -28.33,
+     -25.93,
+     -23.15,
+     -20.0
+    ],
+    "err_deg.shoulder": [
+     0.0,
+     0.1309,
+     0.2473,
+     0.3366,
+     0.3888,
+     0.3982,
+     0.3637,
+     0.2892,
+     0.1829,
+     0.05645
+    ],
+    "err_deg.elbow": [
+     -0.0,
+     -0.07853,
+     -0.1484,
+     -0.202,
+     -0.2333,
+     -0.2389,
+     -0.2182,
+     -0.1735,
+     -0.1097,
+     -0.03387
+    ],
+    "tau_nm.shoulder": [
+     4.2,
+     4.5,
+     4.8,
+     5.1,
+     5.4,
+     5.7,
+     6.0,
+     6.3,
+     6.6,
+     6.9
+    ],
+    "tau_nm.elbow": [
+     1.1,
+     1.2,
+     1.3,
+     1.4,
+     1.5,
+     1.6,
+     1.7,
+     1.8,
+     1.9,
+     2.0
+    ],
+    "tool_x_mm": [
+     300.0,
+     301.5,
+     303.0,
+     304.5,
+     306.0,
+     307.5,
+     309.0,
+     310.5,
+     312.0,
+     313.5
+    ],
+    "tool_z_mm": [
+     250.0,
+     248.0,
+     246.0,
+     244.0,
+     242.0,
+     240.0,
+     238.0,
+     236.0,
+     234.0,
+     232.0
+    ],
+    "contact_t": [
+     0.0,
+     0.005,
+     0.01,
+     0.015,
+     0.02,
+     0.021,
+     0.022,
+     0.023,
+     0.024,
+     0.025,
+     0.03,
+     0.035,
+     0.04,
+     0.045
+    ],
+    "contact_fn_n": [
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     19.32,
+     48.3,
+     33.81,
+     21.73,
+     18.2,
+     12.6,
+     11.9,
+     12.1,
+     12.0
+    ],
+    "tick_t": [
+     0.0,
+     0.01,
+     0.02,
+     0.03,
+     0.04
+    ],
+    "compute_us": [
+     41.2,
+     8.3,
+     8.1,
+     9.0,
+     8.2
+    ]
+   },
+   "events": [
+    {
+     "t": 0.021,
+     "kind": "touch"
+    }
+   ],
+   "wandb_url": null,
+   "wall_s": 1.234
+  },
+  {
+   "controller": "joint_impedance_host",
+   "rung": "R1.FreeSpace",
+   "seed": 0,
+   "metrics": {
+    "tracking_rms_deg": 0.97,
+    "tracking_p95_deg": 1.84,
+    "tracking_max_deg": 2.61,
+    "tool_rms_mm": 3.9,
+    "tool_p95_mm": 7.2,
+    "final_error_deg": 0.21,
+    "settle_time_s": 0.44,
+    "touch_speed_m_s": null,
+    "contact_peak_n": null,
+    "contact_max_n": null,
+    "dwell_force_mean_n": null,
+    "dwell_force_std_n": null,
+    "dwell_force_error_n": null,
+    "dwell_bounces": null,
+    "dwell_contact_fraction": null,
+    "dwell_slip_mm": null,
+    "push_deflection_mm": null,
+    "push_recovery_s": null,
+    "push_overshoot_mm": null,
+    "command_jump_max_deg": 0.0,
+    "torque_rate_max_nm_s": 520.0,
+    "replan_settle_s": null,
+    "replans_accepted": 0,
+    "period_jitter_p50_ms": 0.0,
+    "period_jitter_p99_ms": 0.012,
+    "period_jitter_max_ms": 0.021,
+    "missed_cycles": 0,
+    "worst_stall_ms": 10.02,
+    "latency_p50_ms": 7.041,
+    "latency_p99_ms": 7.083,
+    "latency_max_ms": 7.102,
+    "stale_replies": 0,
+    "schedule_slip_ms": 0.0,
+    "watchdog_trips": 0,
+    "saturation_share": 0.0,
+    "faults": 0,
+    "diverged": 0,
+    "compute_us_p50": 12.2,
+    "compute_us_p99": 22.9,
+    "compute_us_max": 52.0,
+    "command_fields": 3.0,
+    "wire_bytes_per_tick": 28,
+    "host_rate_hz": 100.0,
+    "steps_done": null,
+    "steps_total": null,
+    "sequence_time_s": null,
+    "reached_error_deg": null
+   },
+   "gates": [
+    {
+     "metric": "missed_cycles",
+     "op": "==",
+     "value": 0.0,
+     "why": "the host never skipped a cycle",
+     "measured": 0.0,
+     "passed": true,
+     "note": ""
+    },
+    {
+     "metric": "latency_p99_ms",
+     "op": "<=",
+     "value": 10.0,
+     "why": "sensor-to-command latency stays inside one host period",
+     "measured": 7.083,
+     "passed": true,
+     "note": ""
+    },
+    {
+     "metric": "tracking_p95_deg",
+     "op": "<=",
+     "value": 1.0,
+     "why": "tracks the path within a degree",
+     "measured": 1.84,
+     "passed": false,
+     "note": ""
+    },
+    {
+     "metric": "saturation_share",
+     "op": "<=",
+     "value": 2.0,
+     "why": "rarely at the torque cap",
+     "measured": 0.0,
+     "passed": true,
+     "note": ""
+    },
+    {
+     "metric": "diverged",
+     "op": "==",
+     "value": 0.0,
+     "why": "nothing went non-finite",
+     "measured": 0.0,
+     "passed": true,
+     "note": ""
+    },
+    {
+     "metric": "faults",
+     "op": "==",
+     "value": 0.0,
+     "why": "no board fault or abort",
+     "measured": 0.0,
+     "passed": true,
+     "note": ""
+    }
+   ],
+   "passed": false,
+   "objective": 1.84,
+   "trace": {
+    "t": [
+     0.0,
+     0.005,
+     0.01,
+     0.015,
+     0.02,
+     0.025,
+     0.03,
+     0.035,
+     0.04,
+     0.045
+    ],
+    "q_deg.shoulder": [
+     10.0,
+     9.956,
+     10.43,
+     11.46,
+     13.08,
+     15.27,
+     18.07,
+     21.45,
+     25.39,
+     29.87
+    ],
+    "q_deg.elbow": [
+     -35.0,
+     -34.63,
+     -33.93,
+     -32.88,
+     -31.52,
+     -29.83,
+     -27.84,
+     -25.54,
+     -22.9,
+     -19.92
+    ],
+    "ref_deg.shoulder": [
+     10.0,
+     10.25,
+     10.99,
+     12.22,
+     13.95,
+     16.17,
+     18.89,
+     22.1,
+     25.8,
+     30.0
+    ],
+    "ref_deg.elbow": [
+     -35.0,
+     -34.81,
+     -34.26,
+     -33.33,
+     -32.04,
+     -30.37,
+     -28.33,
+     -25.93,
+     -23.15,
+     -20.0
+    ],
+    "err_deg.shoulder": [
+     0.0,
+     0.2945,
+     0.5565,
+     0.7573,
+     0.8747,
+     0.8959,
+     0.8184,
+     0.6508,
+     0.4115,
+     0.127
+    ],
+    "err_deg.elbow": [
+     -0.0,
+     -0.1767,
+     -0.3339,
+     -0.4544,
+     -0.5248,
+     -0.5375,
+     -0.491,
+     -0.3905,
+     -0.2469,
+     -0.0762
+    ],
+    "tau_nm.shoulder": [
+     4.2,
+     4.5,
+     4.8,
+     5.1,
+     5.4,
+     5.7,
+     6.0,
+     6.3,
+     6.6,
+     6.9
+    ],
+    "tau_nm.elbow": [
+     1.1,
+     1.2,
+     1.3,
+     1.4,
+     1.5,
+     1.6,
+     1.7,
+     1.8,
+     1.9,
+     2.0
+    ],
+    "tool_x_mm": [
+     300.0,
+     301.5,
+     303.0,
+     304.5,
+     306.0,
+     307.5,
+     309.0,
+     310.5,
+     312.0,
+     313.5
+    ],
+    "tool_z_mm": [
+     250.0,
+     248.0,
+     246.0,
+     244.0,
+     242.0,
+     240.0,
+     238.0,
+     236.0,
+     234.0,
+     232.0
+    ],
+    "contact_t": [
+     0.0,
+     0.005,
+     0.01,
+     0.015,
+     0.02,
+     0.025,
+     0.03,
+     0.035,
+     0.04,
+     0.045
+    ],
+    "contact_fn_n": [
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0
+    ],
+    "tick_t": [
+     0.0,
+     0.01,
+     0.02,
+     0.03,
+     0.04
+    ],
+    "compute_us": [
+     52.0,
+     12.4,
+     11.9,
+     13.1,
+     12.2
+    ]
+   },
+   "events": [],
+   "wandb_url": null,
+   "wall_s": 1.234
+  },
+  {
+   "controller": "joint_impedance_host",
+   "rung": "R3.BeltImpact@0.10m/s",
+   "seed": 0,
+   "metrics": {
+    "tracking_rms_deg": 1.12,
+    "tracking_p95_deg": 2.05,
+    "tracking_max_deg": 3.3,
+    "tool_rms_mm": 4.4,
+    "tool_p95_mm": 8.0,
+    "final_error_deg": 0.25,
+    "settle_time_s": 0.51,
+    "touch_speed_m_s": 0.1,
+    "contact_peak_n": 72.4,
+    "contact_max_n": 72.4,
+    "dwell_force_mean_n": 11.6,
+    "dwell_force_std_n": 2.3,
+    "dwell_force_error_n": 1.6,
+    "dwell_bounces": 0,
+    "dwell_contact_fraction": 97.5,
+    "dwell_slip_mm": 1.9,
+    "push_deflection_mm": null,
+    "push_recovery_s": null,
+    "push_overshoot_mm": null,
+    "command_jump_max_deg": 0.0,
+    "torque_rate_max_nm_s": 2960.0,
+    "replan_settle_s": null,
+    "replans_accepted": 0,
+    "period_jitter_p50_ms": 0.0,
+    "period_jitter_p99_ms": 0.012,
+    "period_jitter_max_ms": 0.021,
+    "missed_cycles": 0,
+    "worst_stall_ms": 10.02,
+    "latency_p50_ms": 7.041,
+    "latency_p99_ms": 7.083,
+    "latency_max_ms": 7.102,
+    "stale_replies": 0,
+    "schedule_slip_ms": 0.0,
+    "watchdog_trips": 0,
+    "saturation_share": 0.0,
+    "faults": 0,
+    "diverged": 0,
+    "compute_us_p50": 12.4,
+    "compute_us_p99": 23.4,
+    "compute_us_max": 51.1,
+    "command_fields": 3.0,
+    "wire_bytes_per_tick": 28,
+    "host_rate_hz": 100.0,
+    "steps_done": null,
+    "steps_total": null,
+    "sequence_time_s": null,
+    "reached_error_deg": null
+   },
+   "gates": [
+    {
+     "metric": "missed_cycles",
+     "op": "==",
+     "value": 0.0,
+     "why": "the host never skipped a cycle",
+     "measured": 0.0,
+     "passed": true,
+     "note": ""
+    },
+    {
+     "metric": "latency_p99_ms",
+     "op": "<=",
+     "value": 10.0,
+     "why": "sensor-to-command latency stays inside one host period",
+     "measured": 7.083,
+     "passed": true,
+     "note": ""
+    },
+    {
+     "metric": "contact_peak_n",
+     "op": "<=",
+     "value": 60.0,
+     "why": "the impact transient stays gentle",
+     "measured": 72.4,
+     "passed": false,
+     "note": ""
+    },
+    {
+     "metric": "dwell_bounces",
+     "op": "==",
+     "value": 0.0,
+     "why": "never loses contact during the dwell",
+     "measured": 0.0,
+     "passed": true,
+     "note": ""
+    },
+    {
+     "metric": "dwell_force_error_n",
+     "op": "<=",
+     "value": 10.0,
+     "why": "presses near the 10 N target",
+     "measured": 1.6,
+     "passed": true,
+     "note": ""
+    },
+    {
+     "metric": "dwell_contact_fraction",
+     "op": ">=",
+     "value": 95.0,
+     "why": "in contact for the whole dwell",
+     "measured": 97.5,
+     "passed": true,
+     "note": ""
+    },
+    {
+     "metric": "diverged",
+     "op": "==",
+     "value": 0.0,
+     "why": "nothing went non-finite",
+     "measured": 0.0,
+     "passed": true,
+     "note": ""
+    }
+   ],
+   "passed": false,
+   "objective": 72.4,
+   "trace": {
+    "t": [
+     0.0,
+     0.005,
+     0.01,
+     0.015,
+     0.02,
+     0.025,
+     0.03,
+     0.035,
+     0.04,
+     0.045
+    ],
+    "q_deg.shoulder": [
+     10.0,
+     9.956,
+     10.43,
+     11.46,
+     13.08,
+     15.27,
+     18.07,
+     21.45,
+     25.39,
+     29.87
+    ],
+    "q_deg.elbow": [
+     -35.0,
+     -34.63,
+     -33.93,
+     -32.88,
+     -31.52,
+     -29.83,
+     -27.84,
+     -25.54,
+     -22.9,
+     -19.92
+    ],
+    "ref_deg.shoulder": [
+     10.0,
+     10.25,
+     10.99,
+     12.22,
+     13.95,
+     16.17,
+     18.89,
+     22.1,
+     25.8,
+     30.0
+    ],
+    "ref_deg.elbow": [
+     -35.0,
+     -34.81,
+     -34.26,
+     -33.33,
+     -32.04,
+     -30.37,
+     -28.33,
+     -25.93,
+     -23.15,
+     -20.0
+    ],
+    "err_deg.shoulder": [
+     0.0,
+     0.2945,
+     0.5565,
+     0.7573,
+     0.8747,
+     0.8959,
+     0.8184,
+     0.6508,
+     0.4115,
+     0.127
+    ],
+    "err_deg.elbow": [
+     -0.0,
+     -0.1767,
+     -0.3339,
+     -0.4544,
+     -0.5248,
+     -0.5375,
+     -0.491,
+     -0.3905,
+     -0.2469,
+     -0.0762
+    ],
+    "tau_nm.shoulder": [
+     4.2,
+     4.5,
+     4.8,
+     5.1,
+     5.4,
+     5.7,
+     6.0,
+     6.3,
+     6.6,
+     6.9
+    ],
+    "tau_nm.elbow": [
+     1.1,
+     1.2,
+     1.3,
+     1.4,
+     1.5,
+     1.6,
+     1.7,
+     1.8,
+     1.9,
+     2.0
+    ],
+    "tool_x_mm": [
+     300.0,
+     301.5,
+     303.0,
+     304.5,
+     306.0,
+     307.5,
+     309.0,
+     310.5,
+     312.0,
+     313.5
+    ],
+    "tool_z_mm": [
+     250.0,
+     248.0,
+     246.0,
+     244.0,
+     242.0,
+     240.0,
+     238.0,
+     236.0,
+     234.0,
+     232.0
+    ],
+    "contact_t": [
+     0.0,
+     0.005,
+     0.01,
+     0.015,
+     0.02,
+     0.021,
+     0.022,
+     0.023,
+     0.024,
+     0.025,
+     0.03,
+     0.035,
+     0.04,
+     0.045
+    ],
+    "contact_fn_n": [
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     0.0,
+     28.96,
+     72.4,
+     50.68,
+     32.58,
+     18.2,
+     12.6,
+     11.9,
+     12.1,
+     12.0
+    ],
+    "tick_t": [
+     0.0,
+     0.01,
+     0.02,
+     0.03,
+     0.04
+    ],
+    "compute_us": [
+     52.0,
+     12.4,
+     11.9,
+     13.1,
+     12.2
+    ]
+   },
+   "events": [
+    {
+     "t": 0.021,
+     "kind": "touch"
+    }
+   ],
+   "wandb_url": null,
+   "wall_s": 1.234
+  }
+ ],
+ "summary": {
+  "per_controller": {
+   "joint_trajectory_controller": {
+    "gates_passed": 13,
+    "gates_total": 13,
+    "rungs_passed": 2,
+    "rungs_total": 2,
+    "objective": {
+     "R1.FreeSpace": 0.62,
+     "R3.BeltImpact@0.10m/s": 51.7
+    },
+    "rank": {
+     "R1.FreeSpace": 1,
+     "R3.BeltImpact@0.10m/s": 1
+    },
+    "passed": {
+     "R1.FreeSpace": true,
+     "R3.BeltImpact@0.10m/s": true
+    },
+    "compute_us_p99": 14.75,
+    "missing": []
+   },
+   "joint_impedance_host": {
+    "gates_passed": 11,
+    "gates_total": 13,
+    "rungs_passed": 0,
+    "rungs_total": 2,
+    "objective": {
+     "R1.FreeSpace": 1.84,
+     "R3.BeltImpact@0.10m/s": 72.4
+    },
+    "rank": {
+     "R1.FreeSpace": 2,
+     "R3.BeltImpact@0.10m/s": 2
+    },
+    "passed": {
+     "R1.FreeSpace": false,
+     "R3.BeltImpact@0.10m/s": false
+    },
+    "compute_us_p99": 23.15,
+    "missing": []
+   }
+  },
+  "per_rung": {
+   "R1.FreeSpace": {
+    "title": "Free-space motion",
+    "objective": "tracking_p95_deg",
+    "minimize": true,
+    "best": "joint_trajectory_controller",
+    "best_objective": 0.62,
+    "passed": [
+     "joint_trajectory_controller"
+    ],
+    "values": {
+     "joint_trajectory_controller": 0.62,
+     "joint_impedance_host": 1.84
+    }
+   },
+   "R3.BeltImpact@0.10m/s": {
+    "title": "Belt impact at 0.10 m/s",
+    "objective": "contact_max_n",
+    "minimize": true,
+    "best": "joint_trajectory_controller",
+    "best_objective": 51.7,
+    "passed": [
+     "joint_trajectory_controller"
+    ],
+    "values": {
+     "joint_trajectory_controller": 51.7,
+     "joint_impedance_host": 72.4
+    }
+   }
+  },
+  "pareto": {
+   "R3.BeltImpact@0.10m/s": {
+    "axes": [
+     {
+      "rung": "R1.FreeSpace",
+      "metric": "tracking_p95_deg"
+     },
+     {
+      "rung": "R3.BeltImpact@0.10m/s",
+      "metric": "contact_max_n"
+     },
+     {
+      "rung": null,
+      "metric": "compute_us_p99"
+     }
+    ],
+    "points": [
+     {
+      "controller": "joint_trajectory_controller",
+      "tracking_p95_deg": 0.62,
+      "contact_max_n": 51.7,
+      "compute_us_p99": 14.75,
+      "passed": true,
+      "front": true
+     },
+     {
+      "controller": "joint_impedance_host",
+      "tracking_p95_deg": 1.84,
+      "contact_max_n": 72.4,
+      "compute_us_p99": 23.15,
+      "passed": false,
+      "front": false
+     }
+    ],
+    "front": [
+     "joint_trajectory_controller"
+    ],
+    "among": "passed"
+   }
+  },
+  "recommendation": {
+   "controller": "joint_trajectory_controller",
+   "rungs_passed": 2,
+   "rungs_total": 2,
+   "gates_passed": 13,
+   "gates_total": 13,
+   "compute_us_p99": 14.75,
+   "why": "joint_trajectory_controller passes 2/2 rungs and 13/13 gates at 14.8 µs p99 compute; next is joint_impedance_host with 0/2 rungs."
+  }
+ },
+ "wandb": {
+  "project_url": null,
+  "reports": {}
+ }
+}
