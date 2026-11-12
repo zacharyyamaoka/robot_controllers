@@ -78,9 +78,9 @@ METRICS: tuple[MetricInfo, ...] = (
     _m("faults", "count", "health", "lower", "Board faults plus controller aborts."),
     _m("diverged", "count", "health", "lower", "1 if any command or state went non-finite or out of bounds, else 0."),
     # cost
-    _m("compute_us_p50", "us", "cost", "lower", "Median wall time of one controller tick (measured, single BLAS thread)."),
-    _m("compute_us_p99", "us", "cost", "lower", "99th percentile wall time of one controller tick."),
-    _m("compute_us_max", "us", "cost", "lower", "Largest wall time of one controller tick."),
+    _m("compute_us_p50", "us", "cost", "lower", "Median thread CPU time of one controller tick (single BLAS thread)."),
+    _m("compute_us_p99", "us", "cost", "lower", "99th percentile thread CPU time of one controller tick."),
+    _m("compute_us_max", "us", "cost", "lower", "Largest thread CPU time of one controller tick."),
     _m("command_fields", "count", "cost", "lower", "ServoCommand fields set per joint per tick (bus load proxy)."),
     _m("wire_bytes_per_tick", "bytes", "cost", "lower", "Estimated CAN-FD payload per tick for all joints (moteus registers)."),
     _m("host_rate_hz", "Hz", "cost", "lower", "The host loop rate this run used."),

@@ -75,6 +75,10 @@ class Gate:
     op: Op
     value: float
     why: str  # one line: what failing it would mean
+    # WHY "if_measured": some metrics do not exist for some controllers by design (a host-torque impedance law never
+    # commands a position, so it has no command jump). Such a gate passes as "n/a" instead of failing as "not
+    # measured"; every other gate keeps "coverage counts" (2026-11-12, after the build lanes found the case).
+    applies: Literal["always", "if_measured"] = "always"
 
     @property
     def label(self) -> str:
@@ -91,6 +95,8 @@ class GateResult:
 
 def judge(gate: Gate, value: float | None, note: str = "") -> GateResult:
     if value is None or (isinstance(value, float) and math.isnan(value)):
+        if gate.applies == "if_measured":
+            return GateResult(gate, None, True, note or "n/a for this controller")
         return GateResult(gate, None, False, note or "not measured")
     v = float(value)
     ok = {"<=": v <= gate.value, ">=": v >= gate.value, "==": v == gate.value}[gate.op]
@@ -206,6 +212,7 @@ def gate_rows(results: Sequence[GateResult]) -> list[dict[str, Any]]:
             "op": r.gate.op,
             "value": r.gate.value,
             "why": r.gate.why,
+            "applies": r.gate.applies,
             "measured": r.value,
             "passed": r.passed,
             "note": r.note,

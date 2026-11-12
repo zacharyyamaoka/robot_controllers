@@ -70,3 +70,10 @@ def test_a_gate_on_an_unmeasured_metric_fails_and_says_so():
     assert not unmeasured.passed and unmeasured.note == "not measured"
     assert judge(Gate("dwell_bounces", "==", 0, "x"), 0).passed
     assert judge(Gate("replans_accepted", ">=", 8, "x"), 8).passed
+
+
+def test_an_if_measured_gate_passes_as_na_when_the_metric_does_not_exist():
+    gate = Gate("command_jump_max_deg", "<=", 2, "no jump", applies="if_measured")
+    na = judge(gate, None)
+    assert na.passed and na.note.startswith("n/a")
+    assert not judge(gate, 3.0).passed  # measured values are still judged

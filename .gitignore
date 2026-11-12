@@ -9,3 +9,4 @@ reports/media/
 results/**/media/
 MUJOCO_LOG.TXT
 wandb/
+website/tests/fixtures/results/

@@ -1,4 +1,4 @@
-# robot_controllers — build contract (v1, frozen 2026-11-12)
+# robot_controllers — build contract (v1, frozen 2026-11-12; amendment 1 the same day)
 
 Zach, 2026-11-12: *"controllers are just black boxes ... grouped by their like input and output messages. if they
 are the same types then they are the same black box ... a w&B project for each controller type ... a bunch of
@@ -226,3 +226,20 @@ highlight.py, serve.py, generic tests). Generated from `robot_controllers.regist
 - Sidebar: search, Overview (Home, Rungs, Metrics), then one group per box headed `Input → Output`, listing its
   controllers (planned ones marked).
 - Angles in degrees everywhere a human reads them.
+
+## Amendment 1 (2026-11-12, after the build lanes; a barrier, applied alone)
+
+1. **Compute cost is thread CPU time**, not wall time (`EpisodeLog.compute_s`, `compute_us_*`, and the simulated send
+   delay when `include_compute`). The shared machine ran at load ~100; wall time counted other processes' turns as
+   100+ ms ticks and failed timing gates at random. Wall time stays in `meta["compute_wall_s"]`.
+2. **`Gate.applies = "if_measured"`**: a metric that does not exist for a controller by design passes as "n/a"
+   instead of failing as "not measured". Used once: R5's `command_jump_max_deg` (host-torque impedance never
+   commands a position). Every other gate keeps "coverage counts".
+3. **Index-driven controllers are configured for the rung's host rate**: the loop sets `control_period_s` when the
+   config has it (the tape feeder), as a deployment would.
+4. Sequence `steps_done >= steps_total` gates are the literal step count of each rung's sequence; S1 and S2 carry
+   the timing gates, S3 (the stall rung) does not.
+5. Belt friction is the plant's own Coulomb law (μ 0.6 on the previous step's normal force, smoothed below 0.02 m/s
+   slip): MuJoCo's soft friction chattered a lightly pressed tool off the sliding belt.
+6. The first tick after build or `replace_input` samples t = 0; the tape feeder accepts a new input once `done`.
+
