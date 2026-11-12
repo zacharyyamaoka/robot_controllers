@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "robot-controllers"
+version = "0.1.0"
+description = "Robot controllers as black boxes: robot_msgs in, ServoCommand out, each benchmarked on a ladder of rungs for performance and cost."
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Zach Yamaoka" }]
+requires-python = ">=3.11"
+# WHY numpy + robot_msgs only: a controller is a functional core (Zach, 2026-11-11: "its a functional library so
+# the interfaces are defined by the robot_msgs types"). It must run in plain same-thread Python; the bench,
+# W&B logging and the site are extras so a deployment never pulls MuJoCo or wandb.
+dependencies = ["numpy>=1.26", "robot-msgs>=0.2.0"]
+
+[project.optional-dependencies]
+bench = ["mujoco==3.11.0"]
+tracking = ["wandb==0.31.0", "wandb-workspaces==0.4.13", "weave==0.54.1"]
+site = ["matplotlib>=3.8", "pillow>=10"]
+test = ["pytest>=8", "mujoco==3.11.0", "matplotlib>=3.8", "pillow>=10"]
+
+[project.scripts]
+robot-controllers = "robot_controllers.bench.cli:main"
+
+[tool.uv.sources]
+# WHY a path source: the controller seam (ServoState/ServoCommand, JointCommandSequence) lands on robot_msgs main
+# before each PyPI release; the bench must see the same types the rig code uses.
+robot-msgs = { path = "../robot_msgs", editable = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/robot_controllers"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["website", "reports", "results"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
