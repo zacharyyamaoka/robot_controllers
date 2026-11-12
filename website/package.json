@@ -1,0 +1,11 @@
+{
+  "name": "robotcontrollers-website",
+  "private": true,
+  "scripts": {
+    "build": "env -u VIRTUAL_ENV uv run --frozen --project .. --extra site python build/build.py",
+    "build:fixture": "env -u VIRTUAL_ENV uv run --frozen --project .. --extra site python build/build.py --results-dir tests/fixtures/results",
+    "test": "env -u VIRTUAL_ENV uv run --frozen --project .. --extra test pytest -q tests/test_site.py",
+    "serve": "pnpm run build && python3 build/serve.py 4494 --directory dist",
+    "serve:fixture": "pnpm run build:fixture && python3 build/serve.py 4494 --directory dist"
+  }
+}

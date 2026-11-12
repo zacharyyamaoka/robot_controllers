@@ -1,0 +1,12 @@
+// A static-assets Worker serving dist/ (no server code), like robotmsgs.com. Not deployed: deploying is Zach's call.
+// No custom domain on purpose: until one is chosen the site would live at robotcontrollers.<account>.workers.dev.
+{
+  "name": "robotcontrollers",
+  "compatibility_date": "2026-11-10",
+  "assets": {
+    "directory": "./dist",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page"
+  },
+  "workers_dev": true
+}
