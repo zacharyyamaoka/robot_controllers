@@ -1,1 +1,28 @@
-{}
+{
+ "reports": {
+  "hub/controllers": "https://wandb.ai/zach-yamaoka-independent/Controllers/reports/Controllers-%C2%B7-every-black-box--VmlldzoxODI5NDc2Ng==",
+  "jointcommandsequence-to-servocommand/contact": "https://wandb.ai/zach-yamaoka-independent/Controller%20%C2%B7%20JointCommandSequence%20to%20ServoCommand/reports/JointCommandSequence-to-ServoCommand-%C2%B7-Contact--VmlldzoxODI5NDc0NQ==",
+  "jointcommandsequence-to-servocommand/performance-vs-cost": "https://wandb.ai/zach-yamaoka-independent/Controller%20%C2%B7%20JointCommandSequence%20to%20ServoCommand/reports/JointCommandSequence-to-ServoCommand-%C2%B7-Performance-vs-cost--VmlldzoxODI5NDc0NA==",
+  "jointcommandsequence-to-servocommand/scoreboard": "https://wandb.ai/zach-yamaoka-independent/Controller%20%C2%B7%20JointCommandSequence%20to%20ServoCommand/reports/JointCommandSequence-to-ServoCommand-%C2%B7-Scoreboard--VmlldzoxODI5NDc0Mg==",
+  "jointcommandsequence-to-servocommand/timing": "https://wandb.ai/zach-yamaoka-independent/Controller%20%C2%B7%20JointCommandSequence%20to%20ServoCommand/reports/JointCommandSequence-to-ServoCommand-%C2%B7-Timing--VmlldzoxODI5NDc0Ng==",
+  "jointtrajectory-to-servocommand/contact": "https://wandb.ai/zach-yamaoka-independent/Controller%20%C2%B7%20JointTrajectory%20to%20ServoCommand/reports/JointTrajectory-to-ServoCommand-%C2%B7-Contact--VmlldzoxODI5NDc1NA==",
+  "jointtrajectory-to-servocommand/performance-vs-cost": "https://wandb.ai/zach-yamaoka-independent/Controller%20%C2%B7%20JointTrajectory%20to%20ServoCommand/reports/JointTrajectory-to-ServoCommand-%C2%B7-Performance-vs-cost--VmlldzoxODI5NDc1MQ==",
+  "jointtrajectory-to-servocommand/scoreboard": "https://wandb.ai/zach-yamaoka-independent/Controller%20%C2%B7%20JointTrajectory%20to%20ServoCommand/reports/JointTrajectory-to-ServoCommand-%C2%B7-Scoreboard--VmlldzoxODI5NDc1MA==",
+  "jointtrajectory-to-servocommand/timing": "https://wandb.ai/zach-yamaoka-independent/Controller%20%C2%B7%20JointTrajectory%20to%20ServoCommand/reports/JointTrajectory-to-ServoCommand-%C2%B7-Timing--VmlldzoxODI5NDc1NQ=="
+ },
+ "views": {
+  "jointcommandsequence-to-servocommand/rung/S1.MoveTo": "https://wandb.ai/zach-yamaoka-independent/Controller%20%C2%B7%20JointCommandSequence%20to%20ServoCommand?nw=bm66xrpse4u",
+  "jointcommandsequence-to-servocommand/rung/S2.SeekHardStop": "https://wandb.ai/zach-yamaoka-independent/Controller%20%C2%B7%20JointCommandSequence%20to%20ServoCommand?nw=ionkbm3gvm8",
+  "jointcommandsequence-to-servocommand/rung/S3.HostStall": "https://wandb.ai/zach-yamaoka-independent/Controller%20%C2%B7%20JointCommandSequence%20to%20ServoCommand?nw=283zbhssfzv",
+  "jointtrajectory-to-servocommand/rung/R1.FreeSpace": "https://wandb.ai/zach-yamaoka-independent/Controller%20%C2%B7%20JointTrajectory%20to%20ServoCommand?nw=3i4fdbowlqh",
+  "jointtrajectory-to-servocommand/rung/R2.FastFreeSpace": "https://wandb.ai/zach-yamaoka-independent/Controller%20%C2%B7%20JointTrajectory%20to%20ServoCommand?nw=pa0oalqukm6",
+  "jointtrajectory-to-servocommand/rung/R3.BeltImpact@0.05m/s": "https://wandb.ai/zach-yamaoka-independent/Controller%20%C2%B7%20JointTrajectory%20to%20ServoCommand?nw=r5e1jda3iat",
+  "jointtrajectory-to-servocommand/rung/R3.BeltImpact@0.10m/s": "https://wandb.ai/zach-yamaoka-independent/Controller%20%C2%B7%20JointTrajectory%20to%20ServoCommand?nw=o1g623xznzl",
+  "jointtrajectory-to-servocommand/rung/R3.BeltImpact@0.20m/s": "https://wandb.ai/zach-yamaoka-independent/Controller%20%C2%B7%20JointTrajectory%20to%20ServoCommand?nw=9nw7s6xftg4",
+  "jointtrajectory-to-servocommand/rung/R4.SidewaysPush": "https://wandb.ai/zach-yamaoka-independent/Controller%20%C2%B7%20JointTrajectory%20to%20ServoCommand?nw=6ecf0blawfl",
+  "jointtrajectory-to-servocommand/rung/R5.RapidReplan": "https://wandb.ai/zach-yamaoka-independent/Controller%20%C2%B7%20JointTrajectory%20to%20ServoCommand?nw=nq18szj10x0",
+  "jointtrajectory-to-servocommand/rung/R6.HostStall": "https://wandb.ai/zach-yamaoka-independent/Controller%20%C2%B7%20JointTrajectory%20to%20ServoCommand?nw=z5wnq09e4zy",
+  "jointtrajectory-to-servocommand/rung/R7.BeltImpact@0.10m/s·host500Hz": "https://wandb.ai/zach-yamaoka-independent/Controller%20%C2%B7%20JointTrajectory%20to%20ServoCommand?nw=zfwgaagmarw",
+  "jointtrajectory-to-servocommand/rung/R7.BeltImpact@0.10m/s·host50Hz": "https://wandb.ai/zach-yamaoka-independent/Controller%20%C2%B7%20JointTrajectory%20to%20ServoCommand?nw=7rp7xdhd0c9"
+ }
+}
