@@ -197,8 +197,10 @@ PROFILES = {
     # compute p50/p99 in µs; fields = non-NaN ServoCommand fields per joint
     "joint_trajectory_controller": dict(compute=(8.1, 11.2), fields=3, lag=0.010, soft=False, time_driven=True,
                                         replannable=True),
-    # the same law compiled (CONTRACT amendment 2): identical tracking, less compute
-    "joint_trajectory_controller_cpp": dict(compute=(6.3, 8.9), fields=3, lag=0.010, soft=False, time_driven=True,
+    # the same law compiled (CONTRACT amendment 2): identical tracking AND the same per-tick compute as the Python
+    # profile. WHY not lower: measured on R1/R2/R5 (2026-11-15), ctypes + ServoCommand construction dominate the tick
+    # (~12 us p50 for both, 7 joints); the C++ law alone is ~0.5 us. An invented speed-up would misreport that.
+    "joint_trajectory_controller_cpp": dict(compute=(8.1, 11.2), fields=3, lag=0.010, soft=False, time_driven=True,
                                             replannable=True),
     "tape_feeder": dict(compute=(5.2, 7.4), fields=3, lag=0.010, soft=False, time_driven=False, replannable=False),
     "joint_impedance_board": dict(compute=(11.6, 15.9), fields=5, lag=0.022, soft=True, time_driven=True,
