@@ -243,3 +243,28 @@ highlight.py, serve.py, generic tests). Generated from `robot_controllers.regist
    slip): MuJoCo's soft friction chattered a lightly pressed tool off the sliding belt.
 6. The first tick after build or `replace_input` samples t = 0; the tape feeder accepts a new input once `done`.
 
+
+## Amendment 2 (2026-11-15: several source implementations of one black box; a barrier, applied alone)
+
+Zach, 2026-11-15: *"a controller template with several source implementations of the same black box: Python today
+(robot_controllers), now C++"*.
+
+1. **`ControllerSpec.implementation`** ∈ `python` | `cpp` (default `python`). A second implementation of a law is its
+   own spec, named `<reference>_<language>`, with `variant_of` = the reference spec and the reference's `runs_on` and
+   `config_target`; it is built the same way (`Class(message, config)`), gets its own rows in the results JSON and its
+   own W&B runs, and every test parametrized over the box's built controllers runs on it.
+2. **Parity is its acceptance.** On randomized trajectories, late and irregular dt, the hold at the end,
+   `replace_input` mid-run and in every status, and the path-tolerance abort, every tick's ServoCommand equals the
+   reference's to 1e-12 and the status and diagnostics match (`tests/test_cpp_parity.py`; bit-exact today:
+   `PARITY_TOLERANCE=0` passes). On the ladder every metric equals the reference's except compute.
+3. **`joint_trajectory_controller_cpp`**: the law is `controllers/cpp/include/robot_controllers/joint_trajectory_controller.hpp`
+   (C++17, header-only; no allocation, lock or I/O in `tick`; at most 64 joints; built with `-ffp-contract=off` so
+   `(1 - w)·a + w·b` rounds as numpy does). The Python class loads `controllers/cpp/jtc_capi.cpp`'s C ABI with ctypes
+   (stdlib): no new dependency, `pyproject.toml` untouched. It compiles the shim on first use into the cache
+   (`$ROBOT_CONTROLLERS_CACHE`, else `~/.cache/robot_controllers`; needs a C++17 compiler); `ROBOT_CONTROLLERS_JTC_LIB`
+   points at a library built elsewhere. `diagnostics()` adds `implementation` and `law_cpu_ns` (the law's thread CPU
+   time inside C++, without the ctypes and ServoCommand cost that `compute_s` includes).
+4. C++ users take the header through `controllers/cpp/CMakeLists.txt` (`robot_controllers::headers`). The bam_ws
+   moteus controller node runs this header in its real-time thread, so the law ranked here is the law on the arm.
+5. One deliberate difference: a state missing one of the trajectory's joints raises the same KeyError, but before the
+   clock advances (the Python law advances first).

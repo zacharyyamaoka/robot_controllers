@@ -27,6 +27,9 @@ from robot_msgs.sensor import JointState
 Status = Literal["running", "done", "aborted"]
 RunsOn = Literal["board", "host", "split"]
 Maturity = Literal["built", "planned"]
+# WHY (amendment 2, Zach 2026-11-15): one black box, several source implementations ("Python today ... now
+# C++"); each implementation is its own spec on the same rungs, so the cost of the language is a number.
+Implementation = Literal["python", "cpp"]
 
 # W&B project names may not contain these (wandb 0.31 sdk/wandb_settings.py), and must stay <= 128 characters.
 _WANDB_FORBIDDEN = re.compile(r"[/\\#?%:]")
@@ -129,12 +132,15 @@ class ControllerSpec:
     prior_art: tuple[str, ...] = ()  # "ros2_control joint_trajectory_controller", "CRISP CartesianController"
     variant_of: str | None = None  # another spec's name when this is the same law split differently
     default_config: Mapping[str, Any] = field(default_factory=dict)  # fields the bench sets on the config
+    implementation: Implementation = "python"  # the law's language; a "cpp" spec names its twin in variant_of
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[a-z][a-z0-9_]*", self.name):
             raise ValueError(f"controller name must be snake_case: {self.name!r}")
         if self.maturity == "built" and not self.target:
             raise ValueError(f"{self.name}: a built controller needs a target")
+        if self.implementation not in ("python", "cpp"):
+            raise ValueError(f"{self.name}: implementation must be python or cpp: {self.implementation!r}")
 
     def controller_class(self) -> type:
         return _load(self.target)

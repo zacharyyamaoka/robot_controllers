@@ -35,6 +35,22 @@ CONTROLLERS: tuple[ControllerSpec, ...] = (
         prior_art=("ros2_control joint_trajectory_controller",),
     ),
     ControllerSpec(
+        name="joint_trajectory_controller_cpp",
+        title="Joint trajectory controller (C++)",
+        box=JOINT_TRAJECTORY,
+        runs_on="board",
+        summary="The joint trajectory controller's law compiled from a header-only C++17 implementation (no "
+        "allocation in a tick), the same law the bam_ws moteus controller node runs in its real-time thread.",
+        target=f"{_JT}_cpp:JointTrajectoryControllerCpp",
+        config_target=f"{_JT}:JointTrajectoryConfig",
+        prior_art=(
+            "ros2_control joint_trajectory_controller (C++)",
+            "robot_controllers joint_trajectory_controller",
+        ),
+        variant_of="joint_trajectory_controller",
+        implementation="cpp",
+    ),
+    ControllerSpec(
         name="tape_feeder",
         title="Tape feeder",
         box=JOINT_TRAJECTORY,

@@ -197,6 +197,9 @@ PROFILES = {
     # compute p50/p99 in µs; fields = non-NaN ServoCommand fields per joint
     "joint_trajectory_controller": dict(compute=(8.1, 11.2), fields=3, lag=0.010, soft=False, time_driven=True,
                                         replannable=True),
+    # the same law compiled (CONTRACT amendment 2): identical tracking, less compute
+    "joint_trajectory_controller_cpp": dict(compute=(6.3, 8.9), fields=3, lag=0.010, soft=False, time_driven=True,
+                                            replannable=True),
     "tape_feeder": dict(compute=(5.2, 7.4), fields=3, lag=0.010, soft=False, time_driven=False, replannable=False),
     "joint_impedance_board": dict(compute=(11.6, 15.9), fields=5, lag=0.022, soft=True, time_driven=True,
                                   replannable=True),
@@ -264,6 +267,8 @@ HEADLINE = {
         "R7.BeltImpact@0.10m/s·host500Hz": dict(track=1.4, peak=28.2, dwell=8.8),
     },
 }
+
+HEADLINE["joint_trajectory_controller_cpp"] = HEADLINE["joint_trajectory_controller"]  # one law, two implementations
 
 JCS_HEADLINE = {
     "S1.MoveTo": dict(steps=(2, 2), reached=0.42, time_s=1.38),
@@ -652,6 +657,7 @@ IMPEDANCE = {"stiffness_nm_rad": [40.0, 25.0], "damping_ratio": 0.8, "inertia_kg
              "damping_nm_s_rad": None, "max_effort_nm": None}
 CONFIGS = {
     "joint_trajectory_controller": {"path_tolerance_rad": None},
+    "joint_trajectory_controller_cpp": {"path_tolerance_rad": None},
     "tape_feeder": {"control_period_s": 0.01},
     "joint_impedance_board": {"location": "board", **IMPEDANCE},
     "joint_impedance_host": {"location": "host", **IMPEDANCE},
