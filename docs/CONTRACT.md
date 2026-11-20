@@ -266,6 +266,9 @@ Zach, 2026-11-15: *"a controller template with several source implementations of
    time inside C++, without the ctypes and ServoCommand cost that `compute_s` includes).
 4. C++ users take the header through `controllers/cpp/CMakeLists.txt` (`robot_controllers::headers`). The bam_ws
    moteus controller node runs this header in its real-time thread, so the law ranked here is the law on the arm.
+   **Erratum (2026-11-20):** the node has run only on the twin; on a real bus it is hold-only (its README: "Nothing here
+   has touched the arm"). The real arm's pick cycle streams its own sampler (bam_ws `repick.PanDriver` + `PlanClock`), and
+   the real-arm JTC is arm_motion_bench's lane J (`fullarm_jtc.py`, in progress). The sentence above is the goal, not yet a fact.
 5. One deliberate difference: a state missing one of the trajectory's joints raises the same KeyError, but before the
    clock advances (the Python law advances first).
 
