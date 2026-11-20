@@ -150,6 +150,7 @@ class JointImpedanceController:
         self._max_effort = template.max_effort
         self._no_position = template.position  # NaN: no position target, no position term on the board
         self._zeros = template.velocity  # zero gains (host) and the at-rest velocity of the hold
+        self._last_ff = self._last_fb = self._zeros
         self.status = "running"
         self.message = ""
 
@@ -171,6 +172,7 @@ class JointImpedanceController:
         reference_effort: np.ndarray,
     ) -> ServoCommand:
         self._selector.check(state)
+        self._last_ff, self._last_fb = reference_effort, self._zeros
         return ServoCommand(
             name=self._names,
             position=reference_position,
@@ -190,11 +192,13 @@ class JointImpedanceController:
     ) -> ServoCommand:
         measured_position = self._selector.positions(state)
         measured_velocity = self._selector.velocities(state, "joint_impedance_host")
-        feedforward = (
-            self._stiffness * (reference_position - measured_position)
-            + self._damping * (reference_velocity - measured_velocity)
-            + reference_effort
+        # WHY the feedback summed first, then + effort: the same (a + b) + c the command always carried, so
+        # reporting the split (amendment 3.8) changes no bit of the feed-forward field
+        host_feedback = self._stiffness * (reference_position - measured_position) + self._damping * (
+            reference_velocity - measured_velocity
         )
+        feedforward = host_feedback + reference_effort
+        self._last_ff, self._last_fb = reference_effort, host_feedback
         # WHY velocity None: with damping 0 the board's velocity target has no effect, so it is not sent
         # (one register fewer on the bus). WHY stiffness/damping 0, not None: None keeps the board's gains.
         return ServoCommand(
@@ -215,7 +219,9 @@ class JointImpedanceController:
         reference_effort: np.ndarray,
     ) -> ServoCommand:
         measured_position = self._selector.positions(state)
-        feedforward = self._stiffness * (reference_position - measured_position) + reference_effort
+        host_feedback = self._stiffness * (reference_position - measured_position)
+        feedforward = host_feedback + reference_effort
+        self._last_ff, self._last_fb = reference_effort, host_feedback
         # The board closes D (v - qd) at its own rate on its own velocity estimate, around v = qd_ref.
         return ServoCommand(
             name=self._names,
@@ -226,6 +232,11 @@ class JointImpedanceController:
             damping=self._damping,
             max_effort=self._max_effort,
         )
+
+    def last_split(self) -> tuple[np.ndarray, np.ndarray]:
+        """(feed-forward, host feedback) inside the last command's feed-forward field, N·m in the trajectory's
+        joint order: the reference effort and, on the host locations, the spring (+ damper) torque."""
+        return self._last_ff, self._last_fb
 
     def replace_input(self, message: JointTrajectory) -> None:
         """Run `message` from now: its t = 0 is the next tick (per-joint parameters are re-matched to its

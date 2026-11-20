@@ -187,3 +187,37 @@ def test_the_registry_default_is_the_simple_jtc():
             planned.maturity == "planned" and planned.target is None and planned.prior_art and planned.summary
         )
         assert planned.runs_on in ("board", "host", "split")
+
+
+@pytest.mark.parametrize("location", ["board", "host", "host_spring"])
+def test_joint_impedance_reports_its_host_feedback_split(location):
+    # CONTRACT §3.8.4: the host and host_spring renderings carry feedback in the feed-forward field;
+    # last_split says how much, so the main ladder counts it as feedback
+    from robot_controllers.controllers.joint_impedance import JointImpedanceConfig, JointImpedanceController
+
+    traj = trajectory()
+    effort_traj = JointTrajectory(
+        t=traj.t,
+        joint_names=JOINTS,
+        positions=traj.positions,
+        velocities=traj.velocities,
+        effort=np.tile([1.0, -0.5], (len(traj), 1)),
+    )
+    config = JointImpedanceConfig(
+        location=location, stiffness_nm_rad=(40.0, 25.0), damping_nm_s_rad=(3.0, 1.0)
+    )
+    ctrl = JointImpedanceController(effort_traj, config)
+    assert all(np.array_equal(part, [0.0, 0.0]) for part in ctrl.last_split())
+    q, qd = np.array([0.12, -1.18]), np.array([0.05, -0.02])
+    for k, dt in enumerate([0.0] + [SAMPLE_S] * 10):
+        command, _ = ctrl.tick(state(q, qd), dt)
+        split_ff, split_fb = ctrl.last_split()
+        np.testing.assert_array_equal(split_ff, [1.0, -0.5])
+        spring = np.array([40.0, 25.0]) * (traj.positions[k] - q)
+        expected = {
+            "board": np.zeros(2),
+            "host": spring + np.array([3.0, 1.0]) * (traj.velocities[k] - qd),
+            "host_spring": spring,
+        }[location]
+        np.testing.assert_allclose(split_fb, expected, rtol=1e-12, atol=1e-15)
+        np.testing.assert_allclose(split_ff + split_fb, command.feedforward_effort, rtol=0, atol=1e-12)
