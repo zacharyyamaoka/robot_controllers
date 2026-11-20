@@ -39,6 +39,7 @@ import math
 import os
 import platform
 import socket
+import statistics
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
@@ -48,6 +49,7 @@ from typing import Any
 from robot_controllers.bench.arm import ARM, HOME_Q, ArmConfig
 from robot_controllers.bench.arm_models import RIGID_BODY, planar_arm_feedforward, planar_arm_mass_matrix
 from robot_controllers.bench.board import BoardConfig
+from robot_controllers.bench.types import HostTiming
 from robot_controllers.core import ControllerSpec
 from robot_controllers.models import (
     FEEDBACK_AT,
@@ -69,7 +71,12 @@ SWEPT_RUNGS: tuple[str, ...] = (
     "R9.FastFreeSpace·host50Hz",
     "R9.FastFreeSpace·host500Hz",
 )
-REFERENCE_RUNG = "R2.FastFreeSpace"  # the tracking (and the cost numbers) a recommendation compares
+REFERENCE_RUNG = "R2.FastFreeSpace"  # the tracking (and plan / wire numbers) a recommendation compares
+# WHY 0 and the bus delay (CONTRACT §3.8.2): a board-side law tracks a reference that reaches the board
+# command_delay_s late; sampling it that far ahead is the fix the first sweep left out.
+BUS_DELAY_LOOKAHEAD_S = HostTiming().command_delay_s  # 5.5 ms on the rack
+LOOKAHEADS_S: tuple[float, ...] = (0.0, BUS_DELAY_LOOKAHEAD_S)
+DUTY_RATE_HZ = 100.0  # the median compute_us_p50 a recommendation ranks on is expressed at 100 Hz
 TRACKING_WITHIN = 0.10  # a layout within 10 % of the best passing R2 tracking counts as "as good"
 CTC_DAMPING_RATIO = 0.9
 COST_ORDER: tuple[str, ...] = ("host_duty_pct", "plan_compute_ms_per_s", "wire_bytes_per_s")
@@ -153,26 +160,33 @@ def feedback_placements(model: str) -> tuple[str, ...]:
     return FEEDBACK_AT
 
 
-def layout_name(ff_model: str, ff_at: str, fb_model: str, fb_at: str) -> str:
-    return f"ff={ff_model}@{ff_at}+fb={fb_model}@{fb_at}"
+def layout_name(ff_model: str, ff_at: str, fb_model: str, fb_at: str, lookahead_s: float = 0.0) -> str:
+    """`ff=<model>@<at>+fb=<model>@<at>`, plus `+la=<ms>ms` for a non-zero lookahead."""
+    name = f"ff={ff_model}@{ff_at}+fb={fb_model}@{fb_at}"
+    return name if lookahead_s == 0.0 else f"{name}+la={lookahead_s * 1e3:g}ms"
 
 
 def sweep_points(
-    ff_models: Sequence[str] = FEEDFORWARD_MODELS, fb_models: Sequence[str] = FEEDBACK_MODELS
-) -> list[tuple[str, str, str, str]]:
-    """Every valid (ff model, ff at, fb model, fb at), in model order."""
+    ff_models: Sequence[str] = FEEDFORWARD_MODELS,
+    fb_models: Sequence[str] = FEEDBACK_MODELS,
+    lookaheads_s: Sequence[float] = LOOKAHEADS_S,
+) -> list[tuple[str, str, str, str, float]]:
+    """Every valid (ff model, ff at, fb model, fb at) at every lookahead, in model order."""
     return [
-        (ff_model, ff_at, fb_model, fb_at)
+        (ff_model, ff_at, fb_model, fb_at, float(lookahead))
         for ff_model in ff_models
         for ff_at in feedforward_placements(ff_model)
         for fb_model in fb_models
         for fb_at in feedback_placements(fb_model)
+        for lookahead in lookaheads_s
     ]
 
 
-def layout_spec(ff_model: str, ff_at: str, fb_model: str, fb_at: str) -> ControllerSpec:
+def layout_spec(
+    ff_model: str, ff_at: str, fb_model: str, fb_at: str, lookahead_s: float = 0.0
+) -> ControllerSpec:
     """The LayoutController for one sweep point, as a built ControllerSpec named
-    `ff=<model>@<at>+fb=<model>@<at>`.
+    `ff=<model>@<at>+fb=<model>@<at>` (`+la=<ms>ms` with a lookahead).
 
     Raises ValueError for a pair the layout cannot place (`trajectory` only @trajectory, `none` only @none, a
     model only @plan/@host_*, `board_gains` only @board).
@@ -187,7 +201,7 @@ def layout_spec(ff_model: str, ff_at: str, fb_model: str, fb_at: str) -> Control
             f"feedback {fb_model!r} cannot be placed at {fb_at!r}; it goes at {feedback_placements(fb_model)}"
         )
     feedforward, feedback = feedforward_model(ff_model), feedback_model(fb_model)
-    layout = Layout(ff_at, fb_at)
+    layout = Layout(ff_at, fb_at, lookahead_s=lookahead_s)
     layout.check(feedforward, feedback)
     ff_text = {"trajectory": "the trajectory's own effort column", "none": "no feed-forward"}.get(
         ff_model, f"the {ff_model} model evaluated at {ff_at.replace('_', ' ')}"
@@ -197,12 +211,16 @@ def layout_spec(ff_model: str, ff_at: str, fb_model: str, fb_at: str) -> Control
         if fb_model == "board_gains"
         else f"{fb_model} feedback on the {fb_at.replace('_', ' ')}"
     )
+    ahead = (
+        "" if layout.lookahead_s == 0.0 else f", the reference sampled {layout.lookahead_s * 1e3:g} ms ahead"
+    )
     return ControllerSpec(
-        name=layout_name(ff_model, ff_at, fb_model, fb_at),
-        title=f"ff {ff_model} @ {ff_at} + fb {fb_model} @ {fb_at}",
+        name=layout_name(ff_model, ff_at, fb_model, fb_at, layout.lookahead_s),
+        title=f"ff {ff_model} @ {ff_at} + fb {fb_model} @ {fb_at}"
+        + ("" if layout.lookahead_s == 0.0 else f" + lookahead {layout.lookahead_s * 1e3:g} ms"),
         box=JOINT_TRAJECTORY,
         runs_on=_RUNS_ON[fb_at],
-        summary=f"The layout controller with {ff_text} and {fb_text}.",
+        summary=f"The layout controller with {ff_text} and {fb_text}{ahead}.",
         target=f"{_LC}:LayoutController",
         config_target=f"{_LC}:LayoutConfig",
         prior_art=("robot_controllers layout_controller",),
@@ -283,9 +301,21 @@ def _fmt(value: Any, digits: int = 3) -> str:
     return f"{number:.{digits}g}"
 
 
+def median_duty_pct(runs: Mapping[str, Mapping[str, Any]]) -> float | None:
+    """The median over a layout's rungs of compute_us_p50, as % of one core at 100 Hz (CONTRACT §3.8.3).
+
+    WHY the median and one rate: per-tick CPU time on the shared host varied 2-4x between identical laws, so
+    one noisy rung flipped picks; the rate is fixed so a 500 Hz rung's tick costs the same as a 100 Hz one's.
+    """
+    ticks = [row.get("metrics", {}).get("compute_us_p50") for row in runs.values()]
+    ticks = [float(v) for v in ticks if v is not None and math.isfinite(float(v))]
+    return statistics.median(ticks) * DUTY_RATE_HZ / 1.0e4 if ticks else None
+
+
 def layout_candidates(document: Mapping[str, Any]) -> list[dict[str, Any]]:
     """One candidate per swept controller of a layouts ledger: passed (every gate on every rung it ran), the
-    reference rung's tracking and cost numbers, and which rungs and gates failed."""
+    reference rung's tracking, plan and wire numbers, the median duty over the swept rungs, and which rungs
+    and gates failed."""
     rung_ids = [r["id"] for r in document["rungs"]]
     by_controller: dict[str, dict[str, Mapping[str, Any]]] = {}
     for row in document["results"]:
@@ -311,6 +341,7 @@ def layout_candidates(document: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "feedforward_at": record.get("feedforward_at"),
                 "feedback_model": record.get("feedback_model"),
                 "feedback_at": record.get("feedback_at"),
+                "lookahead_s": record.get("lookahead_s", 0.0),
                 "passed": not failed and not missing,
                 "rungs_passed": sum(1 for rung in rung_ids if rung in runs and runs[rung]["passed"]),
                 "rungs_total": len(rung_ids),
@@ -318,7 +349,9 @@ def layout_candidates(document: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "failed_gates": failed,
                 "tracking_p95_deg": reference.get("tracking_p95_deg"),
                 "fb_share_pct": reference.get("fb_share_pct"),
-                "host_duty_pct": reference.get("host_duty_pct"),
+                "fb_share_lf_pct": reference.get("fb_share_lf_pct"),
+                "host_duty_pct": median_duty_pct(runs),
+                "host_duty_pct_reference_rung": reference.get("host_duty_pct"),
                 "plan_compute_ms_per_s": reference.get("plan_compute_ms_per_s"),
                 "wire_bytes_per_s": reference.get("wire_bytes_per_s"),
             }
@@ -342,11 +375,14 @@ def layout_summary(document: Mapping[str, Any]) -> dict[str, Any]:
         for (ff_model, fb_model), rows in pairs.items()
     ]
     return {
-        "rule": "per (feed-forward model, feedback model): the cheapest layout (lowest host_duty_pct, "
-        "then plan_compute_ms_per_s, then wire_bytes_per_s) among those that pass every gate on every "
-        f"swept rung and whose {REFERENCE_RUNG} tracking_p95_deg is within 10 % of the best passing "
-        f"layout's; cost numbers are {REFERENCE_RUNG}'s",
+        "rule": "per (feed-forward model, feedback model), over every placement and lookahead: the cheapest "
+        "layout (lowest host_duty_pct, then plan_compute_ms_per_s, then wire_bytes_per_s) among those that "
+        f"pass every gate on every swept rung and whose {REFERENCE_RUNG} tracking_p95_deg is within 10 % of "
+        "the best passing layout's; host_duty_pct is the median over the swept rungs of compute_us_p50 "
+        f"expressed at {DUTY_RATE_HZ:g} Hz (median us x {DUTY_RATE_HZ:g} / 10^4), plan and wire are "
+        f"{REFERENCE_RUNG}'s",
         "reference_rung": REFERENCE_RUNG,
+        "lookaheads_s": sorted({float(c.get("lookahead_s", 0.0)) for c in document["controllers"]}),
         "swept_rungs": [r["id"] for r in document["rungs"]],
         "ctc": ctc_record(),
         "per_pair": per_pair,
@@ -358,17 +394,17 @@ def layout_summary(document: Mapping[str, Any]) -> dict[str, Any]:
 # ── the sweep ──────────────────────────────────────────────────────────────────────────────────────────────
 
 
-def _layout_episode(job: tuple[str, str, str, str, str, int]) -> dict[str, Any]:
+def _layout_episode(job: tuple[str, str, str, str, float, str, int]) -> dict[str, Any]:
     """One (layout, rung, seed) -> RunResult dict. Top level so a process pool can run it."""
     os.environ.setdefault("OMP_NUM_THREADS", "1")
-    ff_model, ff_at, fb_model, fb_at, rung_id, seed = job
+    ff_model, ff_at, fb_model, fb_at, lookahead_s, rung_id, seed = job
     from robot_controllers.bench.loop import run_episode
     from robot_controllers.bench.rungs import rung
     from robot_controllers.metrics.episode import run_result
 
     started = time.perf_counter()
-    log = run_episode(layout_spec(ff_model, ff_at, fb_model, fb_at), rung(rung_id), seed=seed)
-    # WHY no trace: ~700 episodes of 200 Hz series would make the ledger ~70 MB; the numbers are the answer
+    log = run_episode(layout_spec(ff_model, ff_at, fb_model, fb_at, lookahead_s), rung(rung_id), seed=seed)
+    # WHY no trace: ~1400 episodes of 200 Hz series would make the ledger ~70 MB; the numbers are the answer
     # here
     result = run_result(log, rung(rung_id), trace=False).to_dict()
     result["wall_s"] = round(time.perf_counter() - started, 3)
@@ -380,6 +416,7 @@ def run_layouts(
     ff_models: Sequence[str] = FEEDFORWARD_MODELS,
     fb_models: Sequence[str] = FEEDBACK_MODELS,
     rungs: Sequence[str] = SWEPT_RUNGS,
+    lookaheads_s: Sequence[float] = LOOKAHEADS_S,
     seeds: Sequence[int] = (0,),
     workers: int = 1,
     progress: Callable[[str], None] | None = print,
@@ -390,7 +427,7 @@ def run_layouts(
     from robot_controllers.bench.rungs import rung as rung_by_id
     from robot_controllers.metrics.summary import summarize
 
-    points = sweep_points(ff_models, fb_models)
+    points = sweep_points(ff_models, fb_models, lookaheads_s)
     swept = [rung_by_id(rung_id) for rung_id in rungs]
     jobs = [(*point, r.id, seed) for point in points for r in swept for seed in seeds]
     if progress:
@@ -402,9 +439,9 @@ def run_layouts(
     def report(job: tuple, result: dict[str, Any]) -> None:
         results.append(result)
         if progress:
-            print_name = layout_name(*job[:4])
+            print_name = layout_name(*job[:5])
             progress(
-                f"  [{len(results)}/{len(jobs)}] {print_name} @ {job[4]}: "
+                f"  [{len(results)}/{len(jobs)}] {print_name} @ {job[5]}: "
                 f"{'pass' if result['passed'] else 'FAIL'} ({result['wall_s']} s)"
             )
 
@@ -422,7 +459,7 @@ def run_layouts(
         record.update(
             dict(
                 zip(
-                    ("feedforward_model", "feedforward_at", "feedback_model", "feedback_at"),
+                    ("feedforward_model", "feedforward_at", "feedback_model", "feedback_at", "lookahead_s"),
                     point,
                     strict=True,
                 )

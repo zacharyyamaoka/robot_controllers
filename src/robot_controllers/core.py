@@ -35,9 +35,10 @@ Implementation = Literal["python", "cpp"]
 _WANDB_FORBIDDEN = re.compile(r"[/\\#?%:]")
 # A controller name: snake_case, or (amendment 3, §3.6) a layout sweep point
 # `ff=<model>@<at>+fb=<model>@<at>`, whose name is its coordinates in the (feed-forward model, placement,
-# feedback model, placement) space.
+# feedback model, placement) space, plus `+la=<ms>ms` for a non-zero lookahead (§3.8.2).
 _SNAKE_CASE = r"[a-z][a-z0-9_]*"
-_LAYOUT_POINT = rf"ff={_SNAKE_CASE}@{_SNAKE_CASE}\+fb={_SNAKE_CASE}@{_SNAKE_CASE}"
+_LOOKAHEAD = r"(?:\+la=[0-9]+(?:\.[0-9]+)?ms)?"
+_LAYOUT_POINT = rf"ff={_SNAKE_CASE}@{_SNAKE_CASE}\+fb={_SNAKE_CASE}@{_SNAKE_CASE}{_LOOKAHEAD}"
 _CONTROLLER_NAME = re.compile(rf"{_SNAKE_CASE}|{_LAYOUT_POINT}")
 
 

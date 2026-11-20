@@ -2,7 +2,8 @@
 
     robot-controllers run [--box SLUG] [--controller NAME ...] [--rung ID ...] [--seeds 0 1] [--workers N]
     robot-controllers wandb [--views] [--verify] [--weave] [--allow-dirty] [--dry-run]
-    robot-controllers layouts [--ff MODEL ...] [--fb MODEL ...] [--rung ID ...] [--seeds 0] [--workers N]
+    robot-controllers layouts [--ff MODEL ...] [--fb MODEL ...] [--rung ID ...] [--lookahead-ms 0 5.5]
+                              [--seeds 0] [--workers N]
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ def main(argv: list[str] | None = None) -> int:
     layouts.add_argument("--ff", action="append", help="feed-forward model (default: every one)")
     layouts.add_argument("--fb", action="append", help="feedback model (default: every one)")
     layouts.add_argument("--rung", action="append", help="rung id (default: R1 R2 R4 R6 R8 and both R9)")
+    layouts.add_argument("--lookahead-ms", type=float, nargs="+", help="default: 0 and the bus delay")
     layouts.add_argument("--seeds", type=int, nargs="+", default=[0])
     layouts.add_argument("--workers", type=int, default=1, help="processes (default 1: uncontended costs)")
 
@@ -48,6 +50,7 @@ def main(argv: list[str] | None = None) -> int:
             ff_models=args.ff or sweep.FEEDFORWARD_MODELS,
             fb_models=args.fb or sweep.FEEDBACK_MODELS,
             rungs=args.rung or sweep.SWEPT_RUNGS,
+            lookaheads_s=[ms / 1e3 for ms in args.lookahead_ms] if args.lookahead_ms else sweep.LOOKAHEADS_S,
             seeds=args.seeds,
             workers=args.workers,
         )

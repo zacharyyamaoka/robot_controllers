@@ -1,6 +1,5 @@
 """The layout sweep's own pieces: which points it sweeps, the CTC bandwidth rule, the recommendation on edge
-cases,
-the per-(FF, FB) summary of a ledger, and one real end-to-end sweep document."""
+cases, the per-(FF, FB) summary of a ledger, and one real end-to-end sweep document."""
 
 from __future__ import annotations
 
@@ -15,14 +14,17 @@ from robot_controllers.bench.arm_models import planar_arm_mass_matrix
 from robot_controllers.bench.board import BoardConfig
 
 
-def test_the_sweep_is_every_valid_pair_once():
+def test_the_sweep_is_every_valid_pair_once_at_both_lookaheads():
     points = layouts.sweep_points()
     # feed-forward: trajectory@trajectory, none@none, 3 models x 3 placements = 11; feedback:
-    # board_gains@board, pd and ctc x 4 placements = 9
-    assert len(points) == 11 * 9 == len(set(points))
+    # board_gains@board, pd and ctc x 4 placements = 9; lookahead 0 and the bus delay (CONTRACT §3.8.2)
+    assert len(points) == 11 * 9 * 2 == len(set(points))
+    assert {p[4] for p in points} == {0.0, 0.0055}
     names = [layouts.layout_name(*p) for p in points]
-    assert "ff=trajectory@trajectory+fb=board_gains@board" in names
-    assert "ff=rigid_body_coulomb@host_measured+fb=ctc@board_scheduled" in names
+    assert len(set(names)) == len(names)
+    assert "ff=trajectory@trajectory+fb=board_gains@board" in names  # lookahead 0 names are unchanged
+    assert "ff=trajectory@trajectory+fb=board_gains@board+la=5.5ms" in names
+    assert "ff=rigid_body_coulomb@host_measured+fb=ctc@board_scheduled+la=5.5ms" in names
     for point in points:
         spec = layouts.layout_spec(*point)
         assert spec.name == layouts.layout_name(*point) and spec.variant_of == "layout_controller"
@@ -30,7 +32,15 @@ def test_the_sweep_is_every_valid_pair_once():
             spec.runs_on
             == {"board": "board", "board_scheduled": "board", "host": "host", "split": "split"}[point[3]]
         )
-        assert spec.make_config().layout.feedforward_at == point[1]
+        layout = spec.make_config().layout
+        assert layout.feedforward_at == point[1] and layout.lookahead_s == point[4]
+    # four positional arguments are lookahead 0, as the acceptance test calls it
+    assert layouts.layout_spec("gravity", "plan", "pd", "split").name == "ff=gravity@plan+fb=pd@split"
+    assert (
+        layouts.layout_name("gravity", "plan", "pd", "split", 0.008) == "ff=gravity@plan+fb=pd@split+la=8ms"
+    )
+    with pytest.raises(ValueError):
+        layouts.layout_spec("gravity", "plan", "pd", "split", -0.001)
 
 
 @pytest.mark.parametrize(
@@ -96,7 +106,7 @@ def test_recommend_breaks_ties_on_wire_then_name_and_names_the_closest_failure()
     )
 
 
-def _row(controller, rung, passed, tracking, duty):
+def _row(controller, rung, passed, tracking, compute_us_p50, rate_hz=100.0):
     return {
         "controller": controller,
         "rung": rung,
@@ -104,7 +114,9 @@ def _row(controller, rung, passed, tracking, duty):
         "objective": tracking,
         "metrics": {
             "tracking_p95_deg": tracking,
-            "host_duty_pct": duty,
+            "compute_us_p50": compute_us_p50,
+            "host_rate_hz": rate_hz,
+            "host_duty_pct": compute_us_p50 * rate_hz / 1e4,
             "plan_compute_ms_per_s": 0.0,
             "wire_bytes_per_s": 2800.0,
             "fb_share_pct": 20.0,
@@ -130,21 +142,30 @@ def test_the_summary_recommends_per_model_pair_from_the_ledger():
         for p in points
     ]
     names = [c["name"] for c in controllers]
+    rungs.append({"id": "R9.FastFreeSpace·host500Hz"})
     results = [
-        _row(names[0], "R1.FreeSpace", True, 0.5, 0.3),
-        _row(names[0], "R2.FastFreeSpace", True, 1.00, 0.3),
-        _row(names[1], "R1.FreeSpace", True, 0.4, 0.9),
-        _row(names[1], "R2.FastFreeSpace", True, 0.95, 0.9),
-        _row(names[2], "R1.FreeSpace", False, 4.0, 0.2),
-        _row(names[2], "R2.FastFreeSpace", True, 2.0, 0.2),
+        _row(names[0], "R1.FreeSpace", True, 0.5, 30.0),
+        _row(names[0], "R2.FastFreeSpace", True, 1.00, 90.0),  # one noisy rung: the median ignores it
+        _row(names[0], "R9.FastFreeSpace·host500Hz", True, 0.3, 20.0, rate_hz=500.0),
+        _row(names[1], "R1.FreeSpace", True, 0.4, 60.0),
+        _row(names[1], "R2.FastFreeSpace", True, 0.95, 50.0),
+        _row(names[1], "R9.FastFreeSpace·host500Hz", True, 0.3, 55.0, rate_hz=500.0),
+        _row(names[2], "R1.FreeSpace", False, 4.0, 20.0),
+        _row(names[2], "R2.FastFreeSpace", True, 2.0, 20.0),
+        _row(names[2], "R9.FastFreeSpace·host500Hz", True, 0.3, 20.0, rate_hz=500.0),
     ]
     summary = layouts.layout_summary({"rungs": rungs, "controllers": controllers, "results": results})
+    candidates = {c["name"]: c for c in summary["candidates"]}
+    # CONTRACT §3.8.3: the cost is the median over the swept rungs of compute_us_p50, at 100 Hz
+    assert candidates[names[0]]["host_duty_pct"] == pytest.approx(30.0 * 100 / 1e4)  # not R2's 0.9 %
+    assert candidates[names[1]]["host_duty_pct"] == pytest.approx(55.0 * 100 / 1e4)
+    assert "median" in summary["rule"]
     pairs = {(p["feedforward_model"], p["feedback_model"]): p for p in summary["per_pair"]}
-    # 1.00 is within 10 % of 0.95 and cheaper: the board layout wins for rigid_body + pd
+    # 1.00 is within 10 % of 0.95 and cheaper over the median: the board layout wins for rigid_body + pd
     assert pairs[("rigid_body", "pd")]["recommendation"]["name"] == names[0]
     assert pairs[("gravity", "pd")]["recommendation"]["name"] is None  # its only layout failed R1
     failed = next(c for c in summary["candidates"] if c["name"] == names[2])
-    assert failed["failed_rungs"] == ["R1.FreeSpace"] and failed["rungs_passed"] == 1
+    assert failed["failed_rungs"] == ["R1.FreeSpace"] and failed["rungs_passed"] == 2  # of 3
     assert summary["overall"]["name"] == names[0]
 
 
@@ -155,9 +176,12 @@ def test_one_real_sweep_document_is_results_1_with_the_layout_summary(tmp_path):
     )
     assert document["schema"] == "robot-controllers/results-1" and document["sweep"] == "layouts"
     assert [c["name"] for c in document["controllers"]] == [
-        f"ff=rigid_body@{at}+fb=board_gains@board" for at in ("plan", "host_reference", "host_measured")
+        f"ff=rigid_body@{at}+fb=board_gains@board{la}"
+        for at in ("plan", "host_reference", "host_measured")
+        for la in ("", "+la=5.5ms")
     ]
-    assert len(document["results"]) == 3 and all(not r["trace"] for r in document["results"])
+    assert [c["lookahead_s"] for c in document["controllers"]] == [0.0, 0.0055] * 3
+    assert len(document["results"]) == 6 and all(not r["trace"] for r in document["results"])
     config = document["controllers"][0]["config"]
     assert config["layout"] == {"feedforward_at": "plan", "feedback_at": "board", "lookahead_s": 0.0}
     assert config["feedforward"].startswith("planar_arm_feedforward(")  # a stable repr, not an address
@@ -167,3 +191,19 @@ def test_one_real_sweep_document_is_results_1_with_the_layout_summary(tmp_path):
     path = layouts.write_layouts(document, tmp_path)
     assert path == tmp_path / "layouts" / "results.json"
     assert json.loads(path.read_text())["summary"]["layouts"]["per_pair"] == summary["per_pair"]
+
+
+def test_controller_names_take_a_lookahead_suffix_and_nothing_else():
+    from robot_controllers.core import ControllerSpec
+    from robot_controllers.registry import JOINT_TRAJECTORY
+
+    def spec(name):
+        return ControllerSpec(
+            name=name, title="t", box=JOINT_TRAJECTORY, runs_on="board", summary="s", maturity="planned"
+        )
+
+    for good in ("ff=a@b+fb=c@d", "ff=a@b+fb=c@d+la=5.5ms", "ff=a@b+fb=c@d+la=8ms", "joint_impedance_board"):
+        assert spec(good).name == good
+    for bad in ("ff=a@b+fb=c@d+la=ms", "ff=a@b+fb=c@d+la=5.5", "ff=a@b+fb=c@d+la=-1ms", "ff=a@b+fb=c@d+x"):
+        with pytest.raises(ValueError):
+            spec(bad)
