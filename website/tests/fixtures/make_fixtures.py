@@ -202,6 +202,11 @@ PROFILES = {
     # (~12 us p50 for both, 7 joints); the C++ law alone is ~0.5 us. An invented speed-up would misreport that.
     "joint_trajectory_controller_cpp": dict(compute=(8.1, 11.2), fields=3, lag=0.010, soft=False, time_driven=True,
                                             replannable=True),
+    # the layout controller's default layout is the JTC's law, tick for tick (amendment 3 parity tests). WHY the JTC's
+    # profile, not a number of its own: measured 2026-11-20 on R1/R2/R5 the two were within each other's noise (p50
+    # 25/27/31 us vs 40/22/21 us on a host at load ~8), so any difference here would be invented.
+    "layout_controller": dict(compute=(8.1, 11.2), fields=3, lag=0.010, soft=False, time_driven=True,
+                              replannable=True),
     "tape_feeder": dict(compute=(5.2, 7.4), fields=3, lag=0.010, soft=False, time_driven=False, replannable=False),
     "joint_impedance_board": dict(compute=(11.6, 15.9), fields=5, lag=0.022, soft=True, time_driven=True,
                                   replannable=True),
@@ -271,6 +276,7 @@ HEADLINE = {
 }
 
 HEADLINE["joint_trajectory_controller_cpp"] = HEADLINE["joint_trajectory_controller"]  # one law, two implementations
+HEADLINE["layout_controller"] = HEADLINE["joint_trajectory_controller"]  # its default layout is the JTC's law
 
 JCS_HEADLINE = {
     "S1.MoveTo": dict(steps=(2, 2), reached=0.42, time_s=1.38),
@@ -661,6 +667,9 @@ CONFIGS = {
     "joint_trajectory_controller": {"path_tolerance_rad": None},
     "joint_trajectory_controller_cpp": {"path_tolerance_rad": None},
     "tape_feeder": {"control_period_s": 0.01},
+    "layout_controller": {"feedforward": None, "feedback": None,
+                          "layout": {"feedforward_at": "trajectory", "feedback_at": "board", "lookahead_s": 0.0},
+                          "max_effort_nm": None, "path_tolerance_rad": None},
     "joint_impedance_board": {"location": "board", **IMPEDANCE},
     "joint_impedance_host": {"location": "host", **IMPEDANCE},
     "joint_impedance_host_spring": {"location": "host_spring", **IMPEDANCE},

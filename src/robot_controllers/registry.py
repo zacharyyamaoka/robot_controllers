@@ -20,6 +20,7 @@ BOXES: tuple[Box, ...] = (JOINT_TRAJECTORY, JOINT_COMMAND_SEQUENCE, POSE_TRAJECT
 
 _JT = "robot_controllers.controllers.joint_trajectory"
 _JI = "robot_controllers.controllers.joint_impedance"
+_LC = "robot_controllers.controllers.layout"
 
 CONTROLLERS: tuple[ControllerSpec, ...] = (
     # ── JointTrajectory → ServoCommand ────────────────────────────────────────────────────────────────────
@@ -99,6 +100,82 @@ CONTROLLERS: tuple[ControllerSpec, ...] = (
         default_config={"location": "host_spring"},
         prior_art=("bam_impedance_controller HOST_SPRING mode",),
         variant_of="joint_impedance_board",
+    ),
+    ControllerSpec(
+        name="layout_controller",
+        title="Layout controller",
+        box=JOINT_TRAJECTORY,
+        runs_on="board",
+        summary="Feed-forward and feedback are pure functions placed by a Layout (plan time, host or board, "
+        "and how often); its default forwards the trajectory and lets the board's own PD close the loop, the "
+        "simple JTC, and every other built controller here is one of its layouts.",
+        target=f"{_LC}:LayoutController",
+        config_target=f"{_LC}:LayoutConfig",
+        prior_art=("ros2_control chained controllers", "Drake InverseDynamicsController"),
+    ),
+    # Planned components of the feed-forward x feedback x layout space (amendment 3): each is one pure model
+    # or one placement the layout sweep cannot reach yet.
+    ControllerSpec(
+        name="disturbance_observer_feedforward",
+        title="Disturbance observer feed-forward",
+        box=JOINT_TRAJECTORY,
+        runs_on="host",
+        maturity="planned",
+        summary="Estimates the unmodelled joint torque on the host from the commanded torque and the "
+        "measured motion through a nominal inverse model and feeds it forward, so feedback only closes what "
+        "the observer misses.",
+        prior_art=("Ohnishi disturbance observer (DOB)",),
+    ),
+    ControllerSpec(
+        name="iterative_learning_feedforward",
+        title="Iterative learning feed-forward",
+        box=JOINT_TRAJECTORY,
+        runs_on="board",
+        maturity="planned",
+        summary="Learns the trajectory's effort column at plan time from the feedback torque of earlier "
+        "repeats of the same trajectory, so a repeated motion converges toward zero feedback while the "
+        "board's PD closes the rest.",
+        prior_art=("Iterative learning control (Arimoto, 1984)",),
+    ),
+    ControllerSpec(
+        name="joint_pid_board_integrator",
+        title="Joint PID, integrator on the board",
+        box=JOINT_TRAJECTORY,
+        runs_on="board",
+        maturity="planned",
+        summary="Adds the board's integral term (moteus ki with its windup limit) to the position-mode PD, "
+        "scored with an integral_share_pct beside fb_share_pct.",
+        prior_art=("moteus position mode ki / ilimit",),
+    ),
+    ControllerSpec(
+        name="joint_pid_host_integrator",
+        title="Joint PID, integrator on the host",
+        box=JOINT_TRAJECTORY,
+        runs_on="host",
+        maturity="planned",
+        summary="Integrates the position error on the host and sends it as feed-forward while the board "
+        "keeps its PD, the settle integrators that hold a joint against friction.",
+        prior_art=("BAM FB hold_friction settle integrators (arm_motion_bench)",),
+    ),
+    ControllerSpec(
+        name="model_predictive_controller",
+        title="Model predictive controller",
+        box=JOINT_TRAJECTORY,
+        runs_on="host",
+        maturity="planned",
+        summary="Re-solves a torque plan over a short horizon of the trajectory at a low host rate and "
+        "streams its first part to the boards, trading host compute for anticipating limits and the model.",
+        prior_art=("OCS2 MPC (ETH Zurich)", "acados"),
+    ),
+    ControllerSpec(
+        name="torque_feedback_controller",
+        title="Torque feedback controller",
+        box=JOINT_TRAJECTORY,
+        runs_on="split",
+        maturity="planned",
+        summary="Compensates gravity on the host and lets the board damp the joints, so a person can guide "
+        "the arm by hand (hand guiding) while it holds its own weight.",
+        prior_art=("CRISP TorqueFeedbackController", "bam_gravity_comp"),
     ),
     ControllerSpec(
         name="cartesian_impedance_controller",
