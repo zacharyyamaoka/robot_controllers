@@ -382,7 +382,9 @@ JointTrajectory. Controllers are `LayoutController` configs named `ff=<model>@<a
   (only with `feedforward_at="none"`), `gravity`, `rigid_body` (gravity + inertia + coriolis + viscous = the nominal model),
   `rigid_body_coulomb` (+ coulomb);
 - feedback models: `board_gains` (`fb = None`: the board's configured kp/kd, the simple JTC), `pd` (`PD` = the board's
-  configured kp/kd as a pure function, so it can move to the host or split), `ctc` (`InertiaScaledPD`, 12 Hz, ζ 0.9);
+  configured kp/kd as a pure function, so it can move to the host or split), `ctc` (`InertiaScaledPD` on
+  `planar_arm_mass_matrix`, ζ 0.9, its bandwidth chosen so that its shoulder kp at home equals the board's configured
+  shoulder kp, 300 N·m/rad: CTC and PD compared at equal stiffness where the arm starts; the number is recorded);
 - every valid (FF placement × FB placement) pair;
 - rungs R1, R2, R4, R6, R8 and both R9 (free space, fast at 100 Hz, push, host stall, model error, fast at 50 and
   500 Hz): the host rate is a rung's, as R7 does it, so every number in the sweep is on a frozen rung.
