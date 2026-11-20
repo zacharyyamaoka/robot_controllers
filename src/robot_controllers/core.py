@@ -33,6 +33,12 @@ Implementation = Literal["python", "cpp"]
 
 # W&B project names may not contain these (wandb 0.31 sdk/wandb_settings.py), and must stay <= 128 characters.
 _WANDB_FORBIDDEN = re.compile(r"[/\\#?%:]")
+# A controller name: snake_case, or (amendment 3, §3.6) a layout sweep point
+# `ff=<model>@<at>+fb=<model>@<at>`, whose name is its coordinates in the (feed-forward model, placement,
+# feedback model, placement) space.
+_SNAKE_CASE = r"[a-z][a-z0-9_]*"
+_LAYOUT_POINT = rf"ff={_SNAKE_CASE}@{_SNAKE_CASE}\+fb={_SNAKE_CASE}@{_SNAKE_CASE}"
+_CONTROLLER_NAME = re.compile(rf"{_SNAKE_CASE}|{_LAYOUT_POINT}")
 
 
 @runtime_checkable
@@ -135,8 +141,10 @@ class ControllerSpec:
     implementation: Implementation = "python"  # the law's language; a "cpp" spec names its twin in variant_of
 
     def __post_init__(self) -> None:
-        if not re.fullmatch(r"[a-z][a-z0-9_]*", self.name):
-            raise ValueError(f"controller name must be snake_case: {self.name!r}")
+        if not _CONTROLLER_NAME.fullmatch(self.name):
+            raise ValueError(
+                f"controller name must be snake_case (or ff=<model>@<at>+fb=<model>@<at>): {self.name!r}"
+            )
         if self.maturity == "built" and not self.target:
             raise ValueError(f"{self.name}: a built controller needs a target")
         if self.implementation not in ("python", "cpp"):
