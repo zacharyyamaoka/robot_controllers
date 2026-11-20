@@ -410,3 +410,31 @@ The amendment's builder writes `models.py`, `controllers/layout.py`, `bench/arm_
 board/loop/log changes for the torque split, `metrics/names.py` + the metric modules, `rungs.py` (two rungs), `registry.py`
 (the catalog entries), `bench/cli.py`, `results/layouts/`, and tests. **`tests/test_layout_acceptance.py` is the
 dispatcher's, written before the build and read-only to the builder.**
+
+### 3.8 Addendum after the first sweep (2026-11-20, dispatcher; a barrier, applied alone)
+
+Two changes the first sweep (`22c2ffb`) showed were needed. Neither moves a gate.
+
+1. **`fb_share_pct` is the arm's share, in traj_compare's formula.** It was the worst joint's RMS ratio. On R1 that
+   picked the elbow, which carries ~0.6 N·m RMS at home, of which ~0.45 N·m is the board's kd times the encoder's
+   quantisation buzz (`board.py` models it on purpose; no feed-forward can remove it), and the ratio passed 100 % when
+   feedback opposed the feed-forward (154 % for pd@host). Now
+   `fb_share_pct = 100 · Σ_joints Σ_samples |fb| / (Σ|ff| + Σ|fb|)`, where ff is what the feed-forward model carried and
+   fb is the board's PD term plus the host's feedback. That is traj_compare's per-joint `fb_share`
+   (`traj_compare/analysis.py`), summed over the joints, so a run shows the same number in both tools and an idle joint
+   can't dominate. New diagnostic **`fb_share_lf_pct`** (%, decomposition, lower): the same after a first-order 50 Hz
+   low-pass of ff and fb. That is what a better model could still take off the feedback; the buzz is a floor beneath it.
+   `fb_rms_nm` and `ff_rms_nm` stay worst-joint, unfiltered. The acceptance test is unchanged and must pass on this
+   definition (dispatcher's check: R1 no feed-forward 99.9 % vs `rigid_body@plan` 14.3 %).
+2. **Lookahead is a swept dimension.** The first sweep left `lookahead_s` at 0, so every board-side law tracked a
+   reference that reached the board 5.5 ms late (the 2026-11-12 finding). Dispatcher's check on R2:
+   `trajectory + board_gains@board` 1.68° → 0.35° with `lookahead_s = 0.0055` (the rung's `command_delay_s`),
+   `rigid_body@plan + ctc@board_scheduled` 2.01° → 0.53°, `rigid_body@plan + pd@split` 1.05° → 2.35° (worse: its host
+   spring already acts on a stale measurement). `layout_spec(ff_model, ff_at, fb_model, fb_at, lookahead_s=0.0)`; a
+   non-zero lookahead adds `+la=<ms>ms` to the name (`ff=trajectory@trajectory+fb=board_gains@board+la=5.5ms`), and
+   the name check accepts it. The sweep runs every valid layout at `lookahead_s` ∈ {0, 0.0055}.
+3. **Cost in `recommend` is less noisy.** `host_duty_pct` varied 2–4× between identical laws on the shared host. The
+   candidates' `host_duty_pct` is now the median over the swept rungs of `compute_us_p50`, expressed at 100 Hz
+   (median µs × 100 / 10⁴), so one noisy rung can't flip a pick. Everything else in the rule stays.
+4. `joint_impedance_host` and `joint_impedance_host_spring` get `last_split()`, so their host feedback counts as
+   feedback on the main ladder.
