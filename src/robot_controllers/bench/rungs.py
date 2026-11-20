@@ -1,7 +1,7 @@
 """The rung ladder: the ruler every controller of a box is measured on (CONTRACT §3, frozen with its gates).
 
     from robot_controllers.bench.rungs import ladder
-    for rung in ladder(JOINT_TRAJECTORY): ...          # R1.FreeSpace ... R7.BeltImpact@0.10m/s·host500Hz
+    for rung in ladder(JOINT_TRAJECTORY): ...          # R1.FreeSpace ... R9.FastFreeSpace·host500Hz
     for rung in ladder(JOINT_COMMAND_SEQUENCE): ...    # S1.MoveTo, S2.SeekHardStop, S3.HostStall
 
 JointTrajectory rungs: the tool path is drawn in (x, z) (minimum-jerk moves, quintic blends, constant-speed
@@ -60,6 +60,7 @@ REPLAN_TARGET_SEED = (
     20261112  # WHY fixed in the rung: the targets are part of the ruler, the same for everyone
 )
 STALL_S = 0.5
+PAYLOAD_KG = 0.3  # R8: on the tool, known to no feed-forward model (amendment 3)
 
 
 # ── paths ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -604,7 +605,57 @@ def _joint_trajectory_ladder() -> tuple[Rung, ...]:
                 "Tests how the host rate moves the impact and the press.",
             )
         )
+    rungs.extend(_amendment_three_rungs(rungs[1]))
     return tuple(rungs)
+
+
+def _amendment_three_rungs(fast: Rung) -> list[Rung]:
+    """R8 and R9 (CONTRACT amendment 3, §3.5): R2's path with model error, and at the other host rates.
+
+    WHY R2's gates, timing gates at each rung's own rate (as R7 does it): every number in the layout sweep is
+    then on a frozen rung, and the only thing that differs from R2 is the one condition the rung names.
+    """
+    r2_gates = tuple(g for g in fast.gates if g.metric not in ("missed_cycles", "latency_p99_ms"))
+    rungs = [
+        Rung(
+            id="R8.FastFreeSpace·payload",
+            title="Fast free-space motion with an unmodelled payload",
+            box=fast.box,
+            family="disturbance",
+            description=f"R2's fast tool path with a {PAYLOAD_KG:g} kg payload on the tool that no "
+            "feed-forward model knows (the trajectory's effort column and every model are the nominal "
+            "arm's). "
+            "Tests how much of a model error feedback closes, and where it is closed.",
+            duration_s=fast.duration_s,
+            inputs=fast.inputs,
+            scene=Scene(payload_kg=PAYLOAD_KG),
+            timing=fast.timing,
+            gates=(*r2_gates, *timing_gates(fast.timing.rate_hz)),
+            objective="tracking_p95_deg",
+            params={**fast.params, "payload_kg": PAYLOAD_KG},
+            order=11,
+        )
+    ]
+    for order, rate in ((12, 50.0), (13, 500.0)):
+        timing = HostTiming(rate_hz=rate)
+        rungs.append(
+            Rung(
+                id=f"R9.FastFreeSpace·host{rate:.0f}Hz",
+                title=f"Fast free-space motion, host at {rate:.0f} Hz",
+                box=fast.box,
+                family="timing",
+                description=f"Rung R2 with the host loop at {rate:.0f} Hz instead of 100 Hz. "
+                "Tests how the host rate moves tracking for a law closed on the host vs on the board.",
+                duration_s=fast.duration_s,
+                inputs=fast.inputs,
+                timing=timing,
+                gates=(*r2_gates, *timing_gates(rate)),
+                objective="tracking_p95_deg",
+                params={**fast.params, "host_rate_hz": rate},
+                order=order,
+            )
+        )
+    return rungs
 
 
 def _move_to_sequence(target: np.ndarray, name: str) -> JointCommandSequence:

@@ -399,7 +399,7 @@ class NoResults(unittest.TestCase):
 
     def test_the_ladder_still_shows_without_results(self):
         jt = next(b for b in self.boxes if b.box == JOINT_TRAJECTORY)
-        self.assertEqual(len(jt.rungs), 10, jt.rungs_source)
+        self.assertEqual(len(jt.rungs), 13, jt.rungs_source)  # ten rungs + R8 and both R9 (amendment 3)
         self.assertFalse((self.dist / "assets" / "plots").exists())
         self.assertFalse((self.dist / "sitemap.xml").exists())  # no origin given: no invented domain
 

@@ -73,6 +73,21 @@ EXPECTED = {
         (*BELT, ("missed_cycles", "==", 0), ("latency_p99_ms", "<=", 2.0)),
         "contact_max_n",
     ),
+    # amendment 3: R2's gates, timing gates at each rung's rate
+    "R8.FastFreeSpace·payload": (
+        (("tracking_p95_deg", "<=", 3.0), ("saturation_share", "<=", 5), ("diverged", "==", 0), *T100),
+        "tracking_p95_deg",
+    ),
+    "R9.FastFreeSpace·host50Hz": (
+        (("tracking_p95_deg", "<=", 3.0), ("saturation_share", "<=", 5), ("diverged", "==", 0),
+         ("missed_cycles", "==", 0), ("latency_p99_ms", "<=", 20.0)),
+        "tracking_p95_deg",
+    ),
+    "R9.FastFreeSpace·host500Hz": (
+        (("tracking_p95_deg", "<=", 3.0), ("saturation_share", "<=", 5), ("diverged", "==", 0),
+         ("missed_cycles", "==", 0), ("latency_p99_ms", "<=", 2.0)),
+        "tracking_p95_deg",
+    ),
     "S1.MoveTo": (
         (("steps_done", ">=", 2), ("reached_error_deg", "<=", 1.0), ("faults", "==", 0), *T100),
         "sequence_time_s",
@@ -127,9 +142,9 @@ class Spec:
 
 
 def test_the_ladders_have_the_contract_ids_in_order():
-    assert [r.id for r in ladder(JOINT_TRAJECTORY)] == list(EXPECTED)[:10]
-    assert [r.id for r in ladder(JOINT_COMMAND_SEQUENCE)] == list(EXPECTED)[10:]
-    assert [r.order for r in ladder(JOINT_TRAJECTORY)] == list(range(1, 11))
+    assert [r.id for r in ladder(JOINT_TRAJECTORY)] == list(EXPECTED)[:13]
+    assert [r.id for r in ladder(JOINT_COMMAND_SEQUENCE)] == list(EXPECTED)[13:]
+    assert [r.order for r in ladder(JOINT_TRAJECTORY)] == list(range(1, 14))
     assert [r.order for r in ladder(JOINT_COMMAND_SEQUENCE)] == [1, 2, 3]
     assert ladder(POSE_TRAJECTORY) == ()
 
