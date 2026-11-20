@@ -16,7 +16,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-Family = Literal["tracking", "contact", "disturbance", "replanning", "timing", "health", "cost", "sequence"]
+# WHY "decomposition" (amendment 3, 2026-11-20): how the commanded torque splits into feed-forward and
+# feedback is its own question ("low feedback torque, where most of it is coming from feedforward terms",
+# Zach 2026-11-11).
+Family = Literal[
+    "tracking", "contact", "disturbance", "replanning", "timing", "health", "decomposition", "cost",
+    "sequence",
+]
 Better = Literal["lower", "higher", "none"]
 
 
@@ -77,6 +83,20 @@ METRICS: tuple[MetricInfo, ...] = (
     _m("saturation_share", "%", "health", "lower", "Share of board samples with a joint at its torque cap."),
     _m("faults", "count", "health", "lower", "Board faults plus controller aborts."),
     _m("diverged", "count", "health", "lower", "1 if any command or state went non-finite or out of bounds, else 0."),
+    _m("torque_rate_rms_nm_s", "N·m/s", "health", "lower",
+       "RMS of d(applied torque)/dt over the board samples, worst joint (chatter, a host-rate law's steps)."),
+    # decomposition (amendment 3): the applied torque split at the board into feed-forward and feedback, every
+    # physics step. Feedback = the board's own PD term + the host feedback riding in the feed-forward field
+    # (from the controller's last_split(); 0 for a controller without one). On a moteus the board term is
+    # measured torque minus the sent feed-forward, so the names hold on the rack (below the torque cap).
+    _m("fb_share_pct", "%", "decomposition", "lower",
+       "100 x RMS(board + host feedback torque) / RMS(applied torque), worst joint: the share feedback "
+       "had to close."),
+    _m("fb_rms_nm", "N·m", "decomposition", "lower",
+       "RMS of the board + host feedback torque, worst joint: what the feed-forward model left for "
+       "feedback."),
+    _m("ff_rms_nm", "N·m", "decomposition", "none",
+       "RMS of the feed-forward torque the feed-forward model carried, worst joint (context)."),
     # cost
     _m("compute_us_p50", "us", "cost", "lower", "Median thread CPU time of one controller tick (single BLAS thread)."),
     _m("compute_us_p99", "us", "cost", "lower", "99th percentile thread CPU time of one controller tick."),
@@ -84,6 +104,13 @@ METRICS: tuple[MetricInfo, ...] = (
     _m("command_fields", "count", "cost", "lower", "ServoCommand fields set per joint per tick (bus load proxy)."),
     _m("wire_bytes_per_tick", "bytes", "cost", "lower", "Estimated CAN-FD payload per tick for all joints (moteus registers)."),
     _m("host_rate_hz", "Hz", "cost", "lower", "The host loop rate this run used."),
+    _m("plan_compute_ms_per_s", "ms/s", "cost", "lower",
+       "Plan-time CPU (the controller's plan_compute_s) per second of trajectory it planned, ms "
+       "(None = not reported)."),
+    _m("host_duty_pct", "%", "cost", "lower",
+       "compute_us_p50 x host rate / 10^4: the share of one host core the tick uses."),
+    _m("wire_bytes_per_s", "bytes/s", "cost", "lower",
+       "wire_bytes_per_tick x host rate: the bus load of the stream."),
     # sequence (JointCommandSequence box)
     _m("steps_done", "count", "sequence", "higher", "Steps that finished on their done-when."),
     _m("steps_total", "count", "sequence", "none", "Steps in the sequence."),
@@ -95,7 +122,10 @@ BY_NAME: dict[str, MetricInfo] = {m.name: m for m in METRICS}
 if len(BY_NAME) != len(METRICS):
     raise RuntimeError("duplicate metric names")
 
-FAMILIES: tuple[Family, ...] = ("tracking", "contact", "disturbance", "replanning", "timing", "health", "cost", "sequence")
+FAMILIES: tuple[Family, ...] = (
+    "tracking", "contact", "disturbance", "replanning", "timing", "health", "decomposition", "cost",
+    "sequence",
+)
 
 
 def info(name: str) -> MetricInfo:

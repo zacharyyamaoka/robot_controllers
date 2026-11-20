@@ -19,6 +19,13 @@
 `meta` carries what the metrics need beyond the arrays: `dwell`, `press_target_n`, `push`, `steps_total`,
 `targets_rad`, `schedule_end_s`, `start_q`, the timing, the board and plant configuration, the wall time, and
 `compute_cpu_s` (each tick's thread CPU time) with `load_average_1m`: a slow controller vs a busy host.
+
+The torque split (amendment 3): after each tick, outside its timing, a controller with `last_split()` reports
+how much of its command's feed-forward field was feed-forward and how much host feedback (`split_ff`,
+`split_fb_host`, one row per host tick); the plant logs per physics step what the board added and its own PD
+term (`tau_ff`, `tau_fb_board`) and which host tick's command it ran (`latched_tick`). At the end, a
+controller whose `diagnostics()` reports `plan_compute_s` (plan-time CPU) has it copied to
+`meta["plan_compute_s"]`.
 """
 
 from __future__ import annotations
@@ -155,6 +162,7 @@ def run_episode(
         )
         defines = dict(defines or {})
         plant.write(command, defines or None)
+        split = _last_split(controller)
         for joint, value in defines.items():
             events.append({"t": wake, "kind": "define", "joint": joint, "value": float(value)})
 
@@ -184,6 +192,7 @@ def run_episode(
             ref_velocity,
             status,
             active,
+            split,
         )
         previous_wake = wake
         previous_sent = sent
@@ -204,6 +213,10 @@ def run_episode(
     meta["compute_wall_s"] = compute_wall
     meta["compute_clock"] = "thread_cpu"
     meta["load_average_1m"] = load_average
+    plan_compute = _plan_compute_s(controller)
+    if plan_compute is not None:
+        meta["plan_compute_s"] = plan_compute
+    has_split = rows.has_split
     return EpisodeLog(
         controller=spec.name,
         rung=rung.id,
@@ -238,7 +251,32 @@ def run_episode(
         external_force=samples["external_force"],
         events=events,
         meta=meta,
+        tau_ff=samples.get("tau_ff"),
+        tau_fb_board=samples.get("tau_fb_board"),
+        latched_tick=samples.get("latched_tick"),
+        split_ff=rows.array("split_ff") if has_split else None,
+        split_fb_host=rows.array("split_fb_host") if has_split else None,
     )
+
+
+def _last_split(controller: Any) -> tuple[Any, Any] | None:
+    """The controller's (tau_ff, tau_fb_host) of the tick just sent, or None when it does not report one."""
+    report = getattr(controller, "last_split", None)
+    if not callable(report):
+        return None
+    feedforward, host_feedback = report()
+    return feedforward, host_feedback
+
+
+def _plan_compute_s(controller: Any) -> float | None:
+    diagnostics = getattr(controller, "diagnostics", None)
+    if not callable(diagnostics):
+        return None
+    try:
+        value = diagnostics().get("plan_compute_s")
+    except Exception:  # noqa: BLE001 - a self-report that fails is simply not there
+        return None
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
 # ── the reference on the intended schedule ─────────────────────────────────────────────────────────────────
@@ -315,8 +353,11 @@ class _Rows:
                 "cmd_max_effort",
                 "ref_position",
                 "ref_velocity",
+                "split_ff",
+                "split_fb_host",
             )
         }
+        self.has_split = False
         self.status: list[str] = []
         self.input_index: list[int] = []
 
@@ -340,6 +381,7 @@ class _Rows:
         ref_velocity: np.ndarray,
         status: str,
         active: int,
+        split: tuple[Any, Any] | None = None,
     ) -> None:
         if self.count >= len(self._scalars["tick_t"]):
             self._grow()
@@ -375,6 +417,16 @@ class _Rows:
                     target[j] = values[i]
         self._vectors["ref_position"][row] = ref_position
         self._vectors["ref_velocity"][row] = ref_velocity
+        if split is not None:
+            # the split arrays are in the command's joint order (the controller's input), like its fields
+            self.has_split = True
+            for key, values in zip(("split_ff", "split_fb_host"), split, strict=True):
+                target = self._vectors[key][row]
+                values = np.asarray(values, dtype=float).reshape(-1)
+                for j, name in enumerate(joint_names):
+                    i = order.get(name)
+                    if i is not None and i < values.size:
+                        target[j] = values[i]
         self.status.append(status)
         self.input_index.append(active)
         self.count += 1

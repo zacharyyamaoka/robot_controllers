@@ -180,6 +180,12 @@ class EpisodeLog:
     events: list[dict[str, Any]] = field(default_factory=list)  # {"t", "kind", ...}: replan, refused,
     # stall_start, stall_end, push_start, push_end, touch, watchdog, abort
     meta: dict[str, Any] = field(default_factory=dict)  # plant name, timing, board config, rung params, targets
+    # the torque split (CONTRACT amendment 3, §3.4); None = this log has none (a plant or log from before it)
+    tau_ff: np.ndarray | None = None  # (N, J) the feed-forward field the board added (0 in watchdog mode 11)
+    tau_fb_board: np.ndarray | None = None  # (N, J) the board's PD term kp (p - q) + kd (v - qd), pre-clip
+    latched_tick: np.ndarray | None = None  # (N, J) int: the host-tick row whose command ran (-1 = none)
+    split_ff: np.ndarray | None = None  # (K, J) the controller's last_split() feed-forward; NaN = it has none
+    split_fb_host: np.ndarray | None = None  # (K, J) ... and the host feedback inside the feed-forward field
 
     def event_times(self, kind: str) -> list[float]:
         return [float(e["t"]) for e in self.events if e.get("kind") == kind]

@@ -16,6 +16,10 @@ Per joint, every tick (fw bldc_servo_position.h, as `bam_pid_tunning.plants.serv
   2026-10-25).
 - The watchdog: no command latched for `watchdog_s` -> moteus mode 11, tau = -kd qd_meas (a brake on the
   configured kd) until the next command latches. Each entry is reported once in `watchdog_entries`.
+- The torque split (amendment 3): after each tick `tau_ff` is the feed-forward the board added (the latched
+  field; 0 in mode 11) and `tau_fb` its own feedback term, kp (p - q) + kd (v - qd) before the clip (the
+  mode-11 brake in mode 11), so tau = clip(tau_ff + tau_fb). `latched_tag` names the command each joint runs
+  (the `tag` it was scheduled with; -1 = the hold `reset` latched).
 
 A command reaches a board through `schedule(command, latch_t)` and takes effect on the first tick at or after
 latch_t (the bus delay is the caller's: the plant schedules at sent time + command delay). A joint the command
@@ -95,6 +99,7 @@ class _Latched:
     kp: float
     kd: float
     limit: float
+    tag: int = -1  # the caller's name for the command this came from (the plant: its write index)
 
 
 def _value(values, index: int, default: float) -> float:
@@ -135,7 +140,8 @@ class ServoBoards:
         feedforward = [0.0] * joints if feedforward is None else [float(v) for v in feedforward]
         self._pending: deque[tuple[float, dict[int, _Latched]]] = deque()
         self._latched = [
-            _Latched(q[j], 0.0, feedforward[j], self._kp[j], self._kd[j], self._cap[j]) for j in range(joints)
+            _Latched(q[j], 0.0, feedforward[j], self._kp[j], self._kd[j], self._cap[j], -1)
+            for j in range(joints)
         ]
         self._control_position = list(q)
         self._offset = [0.0] * joints  # position frame shift from defines (rad)
@@ -149,6 +155,9 @@ class ServoBoards:
         self.measured_position = list(self._previous_measured)
         self.measured_velocity = [0.0] * joints
         self.tau = [0.0] * joints
+        self.tau_ff = [0.0] * joints
+        self.tau_fb = [0.0] * joints
+        self.latched_tag = [-1] * joints
         self.at_cap = [False] * joints
         self.mode = [OK_MODE] * joints
         self.watchdog_entries: list[int] = []
@@ -160,10 +169,15 @@ class ServoBoards:
     # ── commands ───────────────────────────────────────────────────────────────────────────────────────────
 
     def schedule(
-        self, command: ServoCommand, latch_t: float, defines: Mapping[str, float] | None = None
+        self,
+        command: ServoCommand,
+        latch_t: float,
+        defines: Mapping[str, float] | None = None,
+        *,
+        tag: int = -1,
     ) -> None:
         """Queue `command` (and any position `defines`) to latch at `latch_t` (s). Joints it names that these
-        boards do not drive are ignored."""
+        boards do not drive are ignored. `tag` is reported in `latched_tag` while the command runs."""
         shares: dict[int, _Latched] = {}
         for i, name in enumerate(command.name):
             j = self._index.get(name)
@@ -178,6 +192,7 @@ class ServoBoards:
                 kp=_value(command.stiffness, i, self._kp[j]),
                 kd=_value(command.damping, i, self._kd[j]),
                 limit=min(cap, max_effort),
+                tag=int(tag),
             )
         frame_shifts = {
             self._index[name]: float(value) for name, value in (defines or {}).items() if name in self._index
@@ -230,8 +245,10 @@ class ServoBoards:
                 self.mode[j] = WATCHDOG_MODE
                 self.watchdog_entries.append(j)
             latched = self._latched[j]
+            self.latched_tag[j] = latched.tag
             if self.mode[j] == WATCHDOG_MODE:
                 raw = -self._kd[j] * velocity
+                self.tau_fb[j], self.tau_ff[j] = raw, 0.0
                 limit = self._cap[j]
             else:
                 if latched.position == latched.position:  # not NaN
@@ -240,7 +257,11 @@ class ServoBoards:
                     position_term = latched.kp * (control - measured)
                 else:
                     position_term = 0.0
-                raw = position_term + latched.kd * (latched.velocity - velocity) + latched.feedforward
+                # WHY the PD term first, then + feedforward: (a + b) + c is the order the board always summed
+                # in, so splitting it out for the log changes no applied torque by a single bit
+                feedback = position_term + latched.kd * (latched.velocity - velocity)
+                self.tau_fb[j], self.tau_ff[j] = feedback, latched.feedforward
+                raw = feedback + latched.feedforward
                 limit = latched.limit
             if raw > limit:
                 self.tau[j], self.at_cap[j] = limit, True

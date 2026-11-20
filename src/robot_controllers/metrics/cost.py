@@ -49,3 +49,24 @@ def wire_bytes_per_tick(joint_count: int, fields_per_joint: float | None) -> flo
 
 def host_rate_hz(nominal_period_s: float) -> float | None:
     return 1.0 / float(nominal_period_s) if nominal_period_s and nominal_period_s > 0 else None
+
+
+def host_duty_pct(compute_us_p50: float | None, rate_hz: float | None) -> float | None:
+    """compute_us_p50 x host rate / 10^4: the % of one core the tick takes at this rate (CONTRACT §3.4)."""
+    if compute_us_p50 is None or rate_hz is None:
+        return None
+    return float(compute_us_p50) * float(rate_hz) / 1.0e4
+
+
+def wire_bytes_per_s(bytes_per_tick: float | None, rate_hz: float | None) -> float | None:
+    """wire_bytes_per_tick x host rate (bytes/s)."""
+    if bytes_per_tick is None or rate_hz is None:
+        return None
+    return float(bytes_per_tick) * float(rate_hz)
+
+
+def plan_compute_ms_per_s(plan_compute_s: float | None, planned_trajectory_s: float | None) -> float | None:
+    """Plan-time CPU per second of trajectory planned (ms/s); None when the controller reports none."""
+    if plan_compute_s is None or not planned_trajectory_s or planned_trajectory_s <= 0.0:
+        return None
+    return 1.0e3 * float(plan_compute_s) / float(planned_trajectory_s)

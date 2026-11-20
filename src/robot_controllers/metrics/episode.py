@@ -18,7 +18,7 @@ from typing import Any
 import numpy as np
 
 from robot_controllers.bench.types import EpisodeLog, GateResult, Rung, RunResult, gate_rows, judge
-from robot_controllers.metrics import contact, cost, health, sequence, timing, tracking
+from robot_controllers.metrics import contact, cost, decomposition, health, sequence, timing, tracking
 from robot_controllers.metrics.names import BY_NAME, METRICS
 
 Metrics = dict[str, float | int | None]
@@ -155,6 +155,19 @@ def episode_metrics_and_notes(log: EpisodeLog, rung: Rung) -> tuple[Metrics, dic
         )
         or bool(log.event_times("diverged"))
     )
+    metrics["torque_rate_rms_nm_s"] = health.torque_rate_rms_nm_s(log.t, log.tau)
+
+    # decomposition (amendment 3): needs the board's torque split, which logs from before it do not have
+    if log.tau_ff is not None and log.tau_fb_board is not None and log.latched_tick is not None:
+        host_feedback = decomposition.host_feedback_per_sample(
+            log.latched_tick, log.board_mode, log.split_fb_host
+        )
+        metrics.update(
+            decomposition.decomposition_metrics(log.tau, log.tau_ff, log.tau_fb_board, host_feedback)
+        )
+    else:
+        for name in ("fb_share_pct", "fb_rms_nm", "ff_rms_nm"):
+            note(name, "not measured: the log has no board torque split")
 
     # cost
     metrics.update(cost.compute_metrics(log.compute_s))
@@ -171,6 +184,17 @@ def episode_metrics_and_notes(log: EpisodeLog, rung: Rung) -> tuple[Metrics, dic
     metrics["command_fields"] = fields
     metrics["wire_bytes_per_tick"] = cost.wire_bytes_per_tick(len(log.joint_names), fields)
     metrics["host_rate_hz"] = cost.host_rate_hz(log.nominal_period_s)
+    # WHY the rung's nominal rate (CONTRACT §3.5): a cost per second is the cost at the rate it was asked for
+    metrics["host_duty_pct"] = cost.host_duty_pct(metrics["compute_us_p50"], metrics["host_rate_hz"])
+    metrics["wire_bytes_per_s"] = cost.wire_bytes_per_s(
+        metrics["wire_bytes_per_tick"], metrics["host_rate_hz"]
+    )
+    plan_compute = log.meta.get("plan_compute_s")
+    metrics["plan_compute_ms_per_s"] = cost.plan_compute_ms_per_s(
+        None if plan_compute is None else float(plan_compute), _planned_trajectory_s(log)
+    )
+    if plan_compute is None:
+        note("plan_compute_ms_per_s", "not measured: the controller does not report plan_compute_s")
 
     # sequence (JointCommandSequence rungs)
     if _is_sequence_rung(log, rung):
@@ -222,6 +246,18 @@ def _schedule_end_s(log: EpisodeLog, rung: Rung) -> tuple[float | None, str]:
     if times is None or not np.size(times):
         return None, "not measured: the input has no time axis"
     return float(start_t) + float(np.asarray(times, dtype=float).reshape(-1)[-1]), ""
+
+
+def _planned_trajectory_s(log: EpisodeLog) -> float | None:
+    """Seconds of trajectory the controller planned: the first input plus every replan it accepted (the
+    script's durations in `meta["script"]`)."""
+    script = log.meta.get("script") or []
+    if not script:
+        return None
+    accepted = [0] + [int(e["index"]) for e in log.events if e.get("kind") == "replan" and "index" in e]
+    durations = [script[i].get("duration_s") for i in accepted if 0 <= i < len(script)]
+    total = sum(float(d) for d in durations if d is not None)
+    return total if total > 0.0 else None
 
 
 def _replan_counts(log: EpisodeLog) -> tuple[int | None, int]:

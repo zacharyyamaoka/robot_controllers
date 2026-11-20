@@ -118,6 +118,7 @@ class PlanarArmPlant:
         self._allocate(preroll_ticks + int(math.ceil(duration_s / self._dt)) + 8)
         self._last_sample_k: int | None = None
         self._seq = 0
+        self._writes = 0  # commands written this episode: the tag the boards report while each one runs
         self._now = self._first_k * self._dt
         self.advance(0.0)
 
@@ -139,6 +140,10 @@ class PlanarArmPlant:
         self._contact_force = np.zeros((rows, 3))
         self._in_contact = np.zeros(rows, dtype=bool)
         self._external_force = np.zeros((rows, 3))
+        # the torque split (amendment 3): the feed-forward the board added, its PD term, the command it ran
+        self._tau_ff = np.zeros((rows, joints))
+        self._tau_fb_board = np.zeros((rows, joints))
+        self._latched_tick = np.full((rows, joints), -1, dtype=np.int64)
 
     def _grow(self) -> None:
         names = (
@@ -155,6 +160,9 @@ class PlanarArmPlant:
             "_contact_force",
             "_in_contact",
             "_external_force",
+            "_tau_ff",
+            "_tau_fb_board",
+            "_latched_tick",
         )
         old = {name: getattr(self, name) for name in names}
         self._allocate(self._capacity * 2)
@@ -202,9 +210,14 @@ class PlanarArmPlant:
 
     def write(self, command: ServoCommand, defines: Mapping[str, float] | None = None) -> float:
         """Send `command` (its `header.stamp` = when it went on the bus) and any position `defines` (joint ->
-        rad, a homing step's set_output_exact); returns the time they latch on the boards."""
+        rad, a homing step's set_output_exact); returns the time they latch on the boards.
+
+        Each write is numbered 0, 1, ... in order; `latched_tick` in the samples is that number for the
+        command each board ran (-1 = the pre-roll hold), so a host-tick row (one per write) maps onto the
+        physics steps."""
         latch_t = float(command.header.stamp) + self.timing.command_delay_s
-        self.boards.schedule(command, latch_t, defines)
+        self.boards.schedule(command, latch_t, defines, tag=self._writes)
+        self._writes += 1
         return latch_t
 
     # ── physics ────────────────────────────────────────────────────────────────────────────────────────────
@@ -285,6 +298,9 @@ class PlanarArmPlant:
                 self._tool_pos[k] = xpos[tool_body]
                 self._contact_force[k] = (friction_x, 0.0, normal_z)
                 self._external_force[k] = (push_x, push_y, push_z)
+                self._tau_ff[k] = boards.tau_ff
+                self._tau_fb_board[k] = boards.tau_fb
+                self._latched_tick[k] = boards.latched_tag
                 touching = normal > 1e-6
                 self._in_contact[k] = touching
                 if touching and not self._touched:
@@ -322,6 +338,9 @@ class PlanarArmPlant:
             "contact_force": self._contact_force[:rows].copy(),
             "in_contact": self._in_contact[:rows].copy(),
             "external_force": self._external_force[:rows].copy(),
+            "tau_ff": self._tau_ff[:rows].copy(),
+            "tau_fb_board": self._tau_fb_board[:rows].copy(),
+            "latched_tick": self._latched_tick[:rows].copy(),
         }
 
     def meta(self) -> dict[str, Any]:

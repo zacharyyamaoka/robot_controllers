@@ -38,6 +38,20 @@ def saturation_share(at_cap: np.ndarray) -> float | None:
     return 100.0 * float(np.mean(np.any(flags, axis=1)))
 
 
+def torque_rate_rms_nm_s(plant_t: np.ndarray, tau: np.ndarray) -> float | None:
+    """RMS of |d tau / dt| over the board samples, worst joint, N·m/s (chatter, a host-rate law's steps)."""
+    times = np.asarray(plant_t, dtype=float).reshape(-1)
+    torques = np.atleast_2d(np.asarray(tau, dtype=float))
+    if times.size < 2:
+        return None
+    widths = np.diff(times)
+    valid = widths > 0
+    rates = np.diff(torques, axis=0)[valid] / widths[valid, None]
+    if rates.size == 0 or not np.all(np.isfinite(rates)):
+        return None
+    return float(np.max(np.sqrt(np.mean(rates**2, axis=0))))
+
+
 def fault_count(board_mode: np.ndarray, status: np.ndarray, abort_events: int = 0) -> int:
     """Board fault entries (per joint, mode 1) plus controller aborts.
 
