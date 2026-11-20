@@ -268,3 +268,140 @@ Zach, 2026-11-15: *"a controller template with several source implementations of
    moteus controller node runs this header in its real-time thread, so the law ranked here is the law on the arm.
 5. One deliberate difference: a state missing one of the trajectory's joints raises the same KeyError, but before the
    clock advances (the Python law advances first).
+
+
+## Amendment 3 (2026-11-20: feed-forward and feedback as pure functions, and where and how often each runs; a barrier, applied alone)
+
+Zach, 2026-11-20 (Daily Note, `# Controllers`): *"The feedforward models it should accept as pure functions. the feedback
+model as well. Success to me looks like: Given a feed forward model, Given a feedback model. what is the best way you
+basically lay these things out...? computation cost, time, etc."* · *"how and where you do the feedforward control or the
+feedback control ... when and where and how often do we do thoose computations?"* · *"Surely thats just one that like just
+fowrwards the joint trajectory its given, and feedback runs on the driver. that is just alike a first step"*.
+
+A controller in the JointTrajectory box is now three choices on top of one trajectory: a **feed-forward model**, a
+**feedback model** and a **layout** (where each one is evaluated and how often). The built controllers are points in that
+space; the composed controller below reaches all of them and the ones between, so the question "given this FF and this FB,
+which layout?" is a sweep, not a new controller per answer.
+
+### 3.1 The pure-function types (`src/robot_controllers/models.py`, contract)
+
+- **`FeedforwardModel`**: `ff(q, qd, qdd) -> tau`. numpy float arrays in the trajectory's joint order, SI (rad, rad/s,
+  rad/s², N·m). Shape `(n,)` → `(n,)`, and `(N, n)` → `(N, n)` (plan-time evaluation calls it once on every sample).
+  **Pure:** no state, no clock, no I/O, no randomness; equal inputs give equal outputs and the inputs are never written.
+- **`FeedbackModel`**: `fb(q_ref, qd_ref, q, qd) -> tau`, the same conventions. Pure as above (no integrator state: an
+  integral is a later amendment with its own `integral_share_pct`). A feedback a servo board can close also has
+  **`gains(q_ref) -> (kp, kd)`** (N·m/rad, N·m·s/rad per joint) and is exactly `kp·(q_ref − q) + kd·(qd_ref − qd)` with
+  those gains: that is what lets the layout move it onto the board. A feedback without `gains` can only run on the host.
+- Built models (`models.py`):
+  - `PD(kp_nm_rad, kd_nm_s_rad)`: constant gains; `gains` returns them.
+  - `InertiaScaledPD(bandwidth_hz, damping_ratio, mass_matrix)`: computed-torque feedback,
+    `tau = M(q)·(ωn²·e + 2ζωn·ė)` with ωn = 2π·bandwidth, `mass_matrix(q) -> (n, n)` a pure function. On the host it uses
+    the full M(q) at the measured q; `gains(q_ref)` returns `diag(M(q_ref))·ωn²` and `diag(M(q_ref))·2ζωn` (the diagonal
+    part a board can render; the coupling is dropped there, which is the layout's measured cost).
+  - `ZERO_FEEDFORWARD`: `tau = 0`.
+- Planar-arm models (`bench/arm_models.py`, the bench's own robot; numpy only, no MuJoCo):
+  `planar_arm_feedforward(terms, arm=ARM, payload_kg=0.0)` with `terms` ⊆ {`gravity`, `inertia`, `coriolis`, `viscous`,
+  `coulomb`} (`coulomb` = frictionloss·tanh(qd / 0.01 rad/s)), and `planar_arm_mass_matrix(arm=ARM)`. Closed-form
+  two-link rigid-body dynamics with the armature. **Oracle:** with terms {gravity, inertia, coriolis, viscous} it equals
+  `arm.nominal_dynamics` (MuJoCo `mj_inverse`) to 1e-9 N·m on random (q, qd, qdd); M(q) equals `mj_fullM`.
+
+### 3.2 The layout (`src/robot_controllers/models.py`)
+
+`Layout(feedforward_at, feedback_at, lookahead_s=0.0)`, frozen:
+
+| field | value | means | evaluated |
+|---|---|---|---|
+| `feedforward_at` | `trajectory` | use the trajectory's own `effort` column as given (0 when absent): today's JTC | never |
+| | `none` | feed-forward 0 | never |
+| | `plan` | `ff` on every trajectory sample once, at build and at `replace_input`; the tick only samples the column | plan time |
+| | `host_reference` | `ff(q_ref, qd_ref, qdd_ref)` at the sampled reference, every tick | host rate |
+| | `host_measured` | `ff(q, qd, qdd_ref)`: position and velocity terms at the measured state, acceleration from the reference | host rate |
+| `feedback_at` | `board` | position = q_ref, velocity = qd_ref; stiffness/damping = `fb.gains(q_ref)` sampled at build time from the first sample (constant gains); `fb = None` sends None = the board's configured gains | board rate |
+| | `board_scheduled` | as `board`, but `fb.gains(q_ref)` every tick, sent as stiffness/damping | host rate (gains), board rate (law) |
+| | `host` | position NaN, velocity None, stiffness 0, damping 0; feed-forward += `fb(q_ref, qd_ref, q, qd)` from the measured state (as `joint_impedance_host`) | host rate |
+| | `split` | host spring + board damper: position NaN, velocity = qd_ref, stiffness 0, damping = kd of `fb.gains(q_ref)` at build; feed-forward += kp·(q_ref − q) (as `joint_impedance_host_spring`) | host (K), board (D) |
+| `lookahead_s` | ≥ 0 | the reference is sampled at clock + lookahead (the bus delay a board-side law lags by; 2026-11-12 finding) | |
+
+Invalid pairs raise `ValueError` at build: `board`, `board_scheduled` or `split` with a feedback without `gains`;
+`host`, `board_scheduled` or `split` with `fb = None`; `plan` / `host_*` with `ff = None`.
+
+### 3.3 The composed controller (`src/robot_controllers/controllers/layout.py`)
+
+`LayoutController(trajectory, LayoutConfig(feedforward=None, feedback=None, layout=Layout("trajectory", "board"),
+max_effort_nm=None, path_tolerance_rad=None))`. Time-driven exactly as the JTC (`TrajectoryClock`, `TrajectorySampler`,
+the hold at rest after the end, `status`, the path-tolerance abort and hold, `replace_input` with t = 0 at the next
+tick). Velocity/acceleration of the reference: the sampler's velocity; the acceleration is the trajectory's own
+`accelerations` when it has them, else the finite difference of its velocities on its own grid (`np.gradient`), sampled
+linearly like the rest and held at the ends. `plan` evaluates `ff` on the trajectory's samples and the tick interpolates
+that column linearly, so it equals `host_reference` exactly on the sample grid and differs between samples by the
+interpolation error (part of what the sweep measures).
+
+Self-report (`diagnostics()`, plus `last_split() -> (tau_ff, tau_fb_host)` arrays of the last tick): `layout`,
+`feedforward_at`, `feedback_at`, `plan_compute_s` (thread CPU time spent evaluating `ff` at plan time, summed over every
+`plan` load). **Acceptance = parity with the built controllers, every tick's ServoCommand equal to 1e-12:**
+- `LayoutConfig()` (trajectory FF, board, no fb) ≡ `joint_trajectory_controller`.
+- trajectory FF + `PD(K, D)` at `board` ≡ `joint_impedance_board` with explicit K and D; at `host` ≡ `joint_impedance_host`;
+  at `split` ≡ `joint_impedance_host_spring`.
+- `plan` ≡ `host_reference` in every command when every tick lands on a trajectory sample (to 1e-9, the clock's float
+  sum), at different cost.
+
+### 3.4 Metrics added (`metrics/names.py`; new family `decomposition`)
+
+The commanded torque is split three ways at the board, every physics step: `tau_ff` (the feed-forward field latched on
+the board), `tau_fb_board` (the board's PD term, `kp(p − q) + kd(v − qd)`), and the host's feedback, which rides inside
+the feed-forward field and is taken from the controller's `last_split()` (the only self-report a metric uses; a
+controller without `last_split` has `tau_fb_host` = 0). On a real moteus `tau_fb_board` = measured torque − the sent
+feed-forward, so the same names hold on the rack.
+
+| name | unit | family | better | definition |
+|---|---|---|---|---|
+| `fb_share_pct` | % | decomposition | lower | 100 · RMS(tau_fb_board + tau_fb_host) / RMS(tau_applied), worst joint. Zach 2026-11-11: "low feedback torque, where most of it is coming from feedforward terms" |
+| `fb_rms_nm` | N·m | decomposition | lower | RMS(tau_fb_board + tau_fb_host), worst joint: what the feed-forward model left for feedback to close |
+| `ff_rms_nm` | N·m | decomposition | none | RMS of the feed-forward the feed-forward model carried (context) |
+| `plan_compute_ms_per_s` | ms/s | cost | lower | plan-time CPU (`plan_compute_s`) per second of trajectory, ms |
+| `host_duty_pct` | % | cost | lower | compute_us_p50 × host rate / 10⁴: share of one core the tick uses |
+| `wire_bytes_per_s` | bytes/s | cost | lower | wire_bytes_per_tick × host rate |
+| `torque_rate_rms_nm_s` | N·m/s | health | lower | RMS of d(tau_applied)/dt over the board samples, worst joint (chatter, a host-rate law's steps) |
+
+### 3.5 Rungs added (JointTrajectory box; the existing ten unchanged)
+
+| order | id | what | gates | objective |
+|---|---|---|---|---|
+| 11 | `R8.FastFreeSpace·payload` | R2's path with a 0.3 kg payload on the tool that no feed-forward model knows (model error) | R2's | `tracking_p95_deg` ↓ |
+| 12 | `R9.FastFreeSpace·host50Hz` | R2 with the host at 50 Hz | R2's, timing gates at 50 Hz | `tracking_p95_deg` ↓ |
+| 13 | `R9.FastFreeSpace·host500Hz` | R2 with the host at 500 Hz | R2's, timing gates at 500 Hz | `tracking_p95_deg` ↓ |
+
+Their gates are R2's numbers, frozen with this amendment, never moved after results. A cost metric's rate is the rung's
+host rate.
+
+### 3.6 The layout sweep (`bench/layouts.py`, CLI `robot-controllers layouts`)
+
+The answer to "given FF and FB, which layout?" as a ledger: `results/layouts/results.json`, schema results-1, box
+JointTrajectory. Controllers are `LayoutController` configs named `ff=<model>@<at>+fb=<model>@<at>`:
+- feed-forward models: `trajectory` (only with `feedforward_at="trajectory"`: the rung's own effort column), `none`
+  (only with `feedforward_at="none"`), `gravity`, `rigid_body` (gravity + inertia + coriolis + viscous = the nominal model),
+  `rigid_body_coulomb` (+ coulomb);
+- feedback models: `board_gains` (`fb = None`: the board's configured kp/kd, the simple JTC), `pd` (`PD` = the board's
+  configured kp/kd as a pure function, so it can move to the host or split), `ctc` (`InertiaScaledPD`, 12 Hz, ζ 0.9);
+- every valid (FF placement × FB placement) pair;
+- rungs R1, R2, R4, R6, R8 and both R9 (free space, fast at 100 Hz, push, host stall, model error, fast at 50 and
+  500 Hz): the host rate is a rung's, as R7 does it, so every number in the sweep is on a frozen rung.
+
+API (the acceptance test calls these): `layout_spec(ff_model, ff_at, fb_model, fb_at) -> ControllerSpec` (built,
+`target` = `LayoutController`, its `default_config` carrying the functions and the `Layout`; name as above; `runs_on`
+= `board` for board / board_scheduled, `host` for host, `split` for split), and `recommend(candidates) -> dict`, where
+each candidate is a mapping with `name`, `passed` (every gate on every swept rung), `tracking_p95_deg` (R2),
+`host_duty_pct`, `plan_compute_ms_per_s`, `wire_bytes_per_s`; it returns `{"name": <str | None>, "why": <str>}`.
+
+Summary per (FF model, FB model) → **recommended layout = the cheapest layout (lowest host_duty_pct, then
+plan_compute_ms_per_s, then wire_bytes_per_s) among those that pass every gate on every swept rung and whose R2
+`tracking_p95_deg` is within 10 % of the best passing layout's**, with a one-line `why` naming the numbers. If none
+passes, that is the finding and the summary says so. Every placement except `trajectory` ignores the trajectory's own
+`effort` column (the rungs fill it with the nominal model), so the feed-forward is only ever the named model.
+
+### 3.7 Write set
+
+The amendment's builder writes `models.py`, `controllers/layout.py`, `bench/arm_models.py`, `bench/layouts.py`, the
+board/loop/log changes for the torque split, `metrics/names.py` + the metric modules, `rungs.py` (two rungs), `registry.py`
+(the catalog entries), `bench/cli.py`, `results/layouts/`, and tests. **`tests/test_layout_acceptance.py` is the
+dispatcher's, written before the build and read-only to the builder.**
