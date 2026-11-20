@@ -163,10 +163,12 @@ def episode_metrics_and_notes(log: EpisodeLog, rung: Rung) -> tuple[Metrics, dic
             log.latched_tick, log.board_mode, log.split_fb_host
         )
         metrics.update(
-            decomposition.decomposition_metrics(log.tau, log.tau_ff, log.tau_fb_board, host_feedback)
+            decomposition.decomposition_metrics(
+                log.tau, log.tau_ff, log.tau_fb_board, host_feedback, plant_t=log.t
+            )
         )
     else:
-        for name in ("fb_share_pct", "fb_rms_nm", "ff_rms_nm"):
+        for name in ("fb_share_pct", "fb_share_lf_pct", "fb_rms_nm", "ff_rms_nm"):
             note(name, "not measured: the log has no board torque split")
 
     # cost

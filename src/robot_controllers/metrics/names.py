@@ -89,9 +89,14 @@ METRICS: tuple[MetricInfo, ...] = (
     # physics step. Feedback = the board's own PD term + the host feedback riding in the feed-forward field
     # (from the controller's last_split(); 0 for a controller without one). On a moteus the board term is
     # measured torque minus the sent feed-forward, so the names hold on the rack (below the torque cap).
+    # WHY the arm's share in traj_compare's formula (§3.8): a run shows the same number in both tools, it
+    # stays in 0-100 % when feedback opposes the feed-forward, and an idle joint's buzz cannot dominate it.
     _m("fb_share_pct", "%", "decomposition", "lower",
-       "100 x RMS(board + host feedback torque) / RMS(applied torque), worst joint: the share feedback "
-       "had to close."),
+       "100 x sum |feedback| / (sum |feed-forward| + sum |feedback|) over every joint and board sample: "
+       "the share of the torque feedback had to supply (traj_compare's fb_share, summed over the joints)."),
+    _m("fb_share_lf_pct", "%", "decomposition", "lower",
+       "fb_share_pct after a first-order 50 Hz low-pass of feed-forward and feedback per joint: what a "
+       "better model could still take off (the encoder buzz is a floor beneath it)."),
     _m("fb_rms_nm", "N·m", "decomposition", "lower",
        "RMS of the board + host feedback torque, worst joint: what the feed-forward model left for "
        "feedback."),

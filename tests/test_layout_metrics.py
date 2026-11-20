@@ -153,17 +153,50 @@ def test_decomposition_metrics_have_known_answers():
     tau_fb_board = np.array([[1.0, 0.0], [-1.0, 0.0], [1.0, 0.0], [-1.0, 0.0]])
     tau_ff = tau - tau_fb_board  # what the board added: model ff + host fb
     out = decomposition.decomposition_metrics(tau, tau_ff, tau_fb_board, host)
-    # shoulder: fb rms 1 of 4 = 25 %; elbow: fb rms 0.5 of 1 = 50 % -> the worst joint
-    assert out["fb_share_pct"] == pytest.approx(50.0)
-    assert out["fb_rms_nm"] == pytest.approx(1.0)
+    # the arm's share (CONTRACT §3.8, traj_compare's formula summed over the joints):
+    # ff = tau_ff - host: shoulder 3, 5, -5, -3 (sum |.| 16), elbow 0.5, -1.5, 0.5, -1.5 (4) -> 20
+    # fb = board + host: shoulder +-1 (4), elbow 0.5 x 4 (2) -> 6; share = 6 / 26
+    assert out["fb_share_pct"] == pytest.approx(100.0 * 6.0 / 26.0, rel=1e-12)
+    assert out["fb_share_lf_pct"] is None  # no time base given: nothing to low-pass along
+    assert out["fb_rms_nm"] == pytest.approx(1.0)  # worst joint, unfiltered (unchanged)
     # the model's feed-forward: shoulder +-3 / +-5 (rms sqrt(17)), elbow +-1 - 0.5 (rms sqrt(1.25))
     assert out["ff_rms_nm"] == pytest.approx(np.sqrt(17.0))
-    assert (
-        decomposition.decomposition_metrics(
-            np.zeros((3, 2)), np.zeros((3, 2)), np.zeros((3, 2)), np.zeros((3, 2))
-        )["fb_share_pct"]
-        is None
+    zero = np.zeros((3, 2))
+    assert decomposition.decomposition_metrics(zero, zero, zero, zero)["fb_share_pct"] is None
+
+
+def test_the_arm_share_is_bounded_when_feedback_opposes_the_feedforward():
+    # the old worst-joint RMS ratio read 200 % here (applied torque ~0 while ff and fb fight); a share cannot
+    ff = np.array([[2.0, 1.0], [2.0, 1.0]])
+    fb = -ff
+    out = decomposition.decomposition_metrics(ff + fb, ff, fb, np.zeros_like(ff))
+    assert out["fb_share_pct"] == pytest.approx(50.0)
+
+
+def test_the_low_passed_share_drops_the_buzz_and_keeps_a_slow_feedback():
+    t = np.arange(4000) * DT  # 1 s at the board rate
+    ff = np.full((4000, 2), 2.0)
+    buzz = np.where(np.arange(4000) % 2 == 0, 0.5, -0.5)[:, None] * np.ones((1, 2))  # +-0.5 N·m at 2 kHz
+    out = decomposition.decomposition_metrics(ff + buzz, ff, buzz, np.zeros_like(ff), plant_t=t)
+    assert out["fb_share_pct"] == pytest.approx(20.0, rel=1e-12)  # 0.5 / (2 + 0.5)
+    assert out["fb_share_lf_pct"] < 2.0  # a 50 Hz first-order low-pass leaves ~0.02 N·m of a 2 kHz square
+    steady = np.ones((4000, 2))
+    slow = decomposition.decomposition_metrics(
+        3.0 + steady, np.full((4000, 2), 3.0), steady, np.zeros_like(steady), plant_t=t
     )
+    assert slow["fb_share_lf_pct"] == pytest.approx(25.0, rel=1e-9)  # a constant passes the filter whole
+
+
+def test_on_r1_a_rigid_body_model_takes_most_of_the_feedback_off(r1):
+    from robot_controllers.bench.layouts import layout_spec
+
+    bare = episode_metrics(_log(layout_spec("none", "none", "board_gains", "board"), r1), r1)
+    modelled = episode_metrics(_log(layout_spec("rigid_body", "plan", "board_gains", "board"), r1), r1)
+    assert bare["fb_share_pct"] > 99.0 and bare["fb_share_lf_pct"] > 99.0
+    # dispatcher's check (CONTRACT §3.8): 14.3 % arm-wide, 6.1 % low-passed
+    assert modelled["fb_share_pct"] == pytest.approx(14.3, abs=0.5)
+    assert modelled["fb_share_lf_pct"] == pytest.approx(6.1, abs=0.5)
+    assert modelled["fb_share_lf_pct"] < modelled["fb_share_pct"]  # the buzz is a floor the filter removes
 
 
 def test_cost_rates_and_torque_rate_rms():
@@ -181,5 +214,6 @@ def test_old_logs_without_the_split_say_not_measured():
     log = make_log()
     metrics = episode_metrics(log, make_rung())
     assert metrics["fb_share_pct"] is None and metrics["fb_rms_nm"] is None and metrics["ff_rms_nm"] is None
+    assert metrics["fb_share_lf_pct"] is None
     assert metrics["host_duty_pct"] == pytest.approx(20.0 * 100.0 / 1e4)
     assert metrics["wire_bytes_per_s"] == pytest.approx(metrics["wire_bytes_per_tick"] * 100.0)
