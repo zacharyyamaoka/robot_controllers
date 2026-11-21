@@ -10,8 +10,8 @@ bundle per config and run it. Each config is spelled the way that tooling spells
 
 - `effort`: `as_built` (the tape's own column, P2) or `model_at_plan` (the plan-time model column `modelff` writes:
   inertial + offset + viscous + J1 gravity), `+ coulomb` for P5 ("coulomb held in the approach direction");
-- `lookahead_ms`: per joint (the calibrated best lookahead from the grade ledger's twin calibration at that rate and
-  bus), plus `lookahead_ms_scalar` (their mean) because `augment_bundle` takes one `shift_s` for every joint;
+- `lookahead_ms`: per joint (the calibrated lookahead, the friction-aware bus delay of §5.2, from the grade ledger's
+  twin calibration at that rate and bus), plus `lookahead_ms_scalar` (their mean) because `augment_bundle` takes one `shift_s` for every joint;
 - `interpolation`: `tangent` (the JTC as it runs) or `secant_mid_ff`, which a bundle carries as a column transform at
   the JTC's own tick period T: `qd <- (q(t + T) - q(t)) / T` and `effort <- effort(t + T / 2)`.
 
@@ -90,7 +90,7 @@ def run_request(
         member = config(cid)
         lookahead = None
         if member.lookahead_mode == "calibrated" and calibration is not None:
-            lookahead = list(calibration["best_lookahead_ms"])
+            lookahead = list(calibration["lookahead_ms"])
         elif member.lookahead_mode == "none":
             lookahead = [0.0] * len(spec.joint_names)
         entries.append({

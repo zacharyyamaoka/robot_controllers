@@ -28,8 +28,8 @@ How it answers:
    `rigid_body_coulomb`: P1 needs nothing, P2 an effort column, P5 the Coulomb term, the rest `rigid_body`); the next
    one is the runner-up. None of them passing gives `controller=None` and the reason.
 4. **The controller** is built for the setup (`population.config_spec` on its arm, rate, model error and gains): a
-   "nominal" lookahead reads the setup's bus; a "calibrated" one the twin's best lookahead on the matched scenario
-   shifted by (your bus - that scenario's bus) per joint. WHY shifted, not re-run: recommend is a lookup; the routine
+   "nominal" lookahead reads the setup's bus; a "calibrated" one the twin's calibrated lookahead (the friction-aware
+   bus delay, §5.2) on the matched scenario shifted by (your bus - that scenario's bus) per joint. WHY shifted, not re-run: recommend is a lookup; the routine
    that measures it on the real arm is `robot-controllers calibrate` (or the sweep on a real log, §5.9).
 """
 
@@ -201,7 +201,7 @@ def _shifted_calibration(row: Mapping[str, Any], setup: Setup, count: int) -> tu
     calibration = row.get("calibration")
     if not calibration:
         return None
-    best = [float(v) for v in calibration["best_lookahead_ms"]]
+    best = [float(v) for v in calibration["lookahead_ms"]]  # what the config sampled ahead by (the bus delay, §5.2)
     twin = [float(v) for v in calibration["twin_bus_ms"]]
     mine = _bus_ms(setup.bus, count)
     if len(best) != count:
@@ -373,7 +373,7 @@ def recommend(
         why += "; better but not runnable here: " + ", ".join(f"{c} ({refused[c]})" for c in skipped)
     if pick["lookahead_mode"] == "calibrated":
         why += (
-            "; its lookahead is the twin's calibrated best lookahead there shifted by your bus - measure yours "
+            "; its lookahead is the twin's calibrated bus delay there shifted by your bus - measure yours "
             "with `robot-controllers calibrate`"
         )
     # WHY said, not filtered (§5.5, §5.9): host-side feedback saturated the boards at 50 Hz in every earlier sim, so a

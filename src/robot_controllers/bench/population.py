@@ -30,11 +30,15 @@ Lookahead modes:
 - `none`: 0;
 - `nominal`: the datasheet bus (`calibration.datasheet_bus`, §5.4), whatever bus the twin runs: what a controller
   that trusts the datasheet samples ahead by (`nominal=` overrides it, e.g. `recommend` passes the user's bus);
-- `calibrated`: the best lookahead (§5.2's plain xcorr fit, not the friction-aware bus delay) from `calibrate_bus` on
-  the arm's calibration target at that scenario's bus and host rate, run once per (arm, bus, rate)
-  (`scenario_calibration`). WHY one calibration per bus and rate, not per config: it is a routine the rig runs once,
-  with one recipe (the `robot-controllers calibrate` one: the trajectory's effort, board PD, secant_mid_ff, on the
-  nominal model and gains), and every config then reads the same number.
+- `calibrated`: the friction-aware bus delay (§5.2, `calibrate_bus(..., friction=True)`) from `calibrate_bus` on the
+  arm's calibration target at that scenario's bus and host rate, run once per (arm, bus, rate)
+  (`scenario_calibration`); the plain fit (the "best lookahead") is recorded beside it. WHY the bus delay (contract
+  §5.2 as amended after the first full grade, 2026-11-20): at 50 Hz with the secant velocity the plain fit
+  over-advances; P4s at base, tool p95, plain fit vs bus delay: planar 1.58 vs 1.36 mm, UR5e 4.65 vs 1.80 mm,
+  pendulum 15.98 vs 11.61 mm, five-bar 12.05 vs 12.08 mm. Friction lag is not a pure delay, so sampling ahead by it
+  adds error elsewhere. WHY one calibration per bus and rate, not per config: it is a routine the rig runs once, with
+  one recipe (the `robot-controllers calibrate` one: the trajectory's effort, board PD, secant_mid_ff, on the nominal
+  model and gains), and every config then reads the same number.
 """
 
 from __future__ import annotations
@@ -139,9 +143,9 @@ def _ms(values: Any) -> list[float]:
 @functools.lru_cache(maxsize=128)
 def scenario_calibration(arm: str, bus: BusTiming, host_rate_hz: float, seed: int = 0) -> dict[str, Any]:
     """The calibration of `arm` on `bus` at `host_rate_hz` (§5.2): two xcorr fits of one zero-lookahead run of the
-    calibration recipe on the arm's calibration target, the plain one (the best lookahead, what "calibrated" configs
-    sample ahead by) and the friction-aware one (the bus delay, what is compared with the datasheet). JSON-safe;
-    seconds as tuples, ms as lists."""
+    calibration recipe on the arm's calibration target, the friction-aware one (the bus delay: what is compared with
+    the datasheet, and what "calibrated" configs sample ahead by, `lookahead_s`) and the plain one (the "best
+    lookahead", recorded beside it). JSON-safe; seconds as tuples, ms as lists."""
     from robot_controllers.bench.layouts import layout_spec
     from robot_controllers.bench.scenarios import Scenario
     from robot_controllers.calibration import calibrate_bus, datasheet_bus
@@ -163,6 +167,9 @@ def scenario_calibration(arm: str, bus: BusTiming, host_rate_hz: float, seed: in
     return {
         "rung": rung.id,
         "method": "xcorr",
+        "lookahead": "bus_delay",
+        "lookahead_s": delay_s,
+        "lookahead_ms": _ms(delay_s),
         "recipe": "ff=trajectory@trajectory+fb=board_gains@board+interp=secant_mid_ff, zero lookahead",
         "best_lookahead_s": best_s,
         "bus_delay_s": delay_s,
@@ -184,12 +191,12 @@ def calibration_for(scenario: Any) -> dict[str, Any]:
 
 
 def _calibrated_lookahead(calibration: Any, count: int) -> tuple[float, ...]:
-    """The best lookahead from a calibration record (this module's dict), a `calibration.Calibration`, a `BusTiming`
-    or plain seconds."""
+    """The lookahead a "calibrated" config reads from a calibration record (this module's dict: `lookahead_s`, else
+    `lookahead_ms`), a `calibration.Calibration`, a `BusTiming` or plain seconds."""
     if isinstance(calibration, Mapping):
-        values = calibration.get("best_lookahead_s")
+        values = calibration.get("lookahead_s")
         if values is None:
-            values = [v / 1e3 for v in calibration["best_lookahead_ms"]]
+            values = [v / 1e3 for v in calibration["lookahead_ms"]]
         return tuple(float(v) for v in values)
     measured = getattr(calibration, "measured", calibration)
     if isinstance(measured, BusTiming):

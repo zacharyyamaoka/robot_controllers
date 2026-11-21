@@ -131,7 +131,7 @@ def test_the_lookahead_modes_and_a_nominal_override():
     from robot_controllers.bench.scenarios import base_scenario
 
     base = base_scenario("planar_arm")
-    calibration = {"best_lookahead_s": (0.004, 0.006)}
+    calibration = {"lookahead_s": (0.004, 0.006)}
     assert lookahead_for("P4", base, calibration) == (0.004, 0.006)
     assert lookahead_for("P1", base, calibration) == (0.004, 0.006)
     assert lookahead_for("P8", base, calibration) == 0.0
@@ -143,6 +143,17 @@ def test_the_lookahead_modes_and_a_nominal_override():
                                                                                  "secant_mid_ff")
     assert CONFIGS["P5"].feedforward_needed == "rigid_body_coulomb"
     assert CONFIGS["P2"].feedforward_needed == "trajectory"
+
+
+def test_calibrated_reads_the_friction_aware_bus_delay_and_the_row_keeps_both():
+    from robot_controllers.bench.population import calibration_for, lookahead_for
+    from robot_controllers.bench.scenarios import base_scenario
+
+    base = base_scenario("planar_arm")
+    record = calibration_for(base)
+    assert record["lookahead"] == "bus_delay" and record["lookahead_s"] == record["bus_delay_s"]
+    assert lookahead_for("P4s", base) == record["bus_delay_s"]
+    assert record["best_lookahead_ms"] and record["datasheet_ms"] == [1.25, 2.5]
 
 
 # ── ranking and recommend on a hand-built ledger ────────────────────────────────────────────────────────────
@@ -163,7 +174,7 @@ def _row(arm, scenario, config, *, kind="path", axis="base", rate=50.0, error=0.
         "feedback": f"{member.fb_model}@{member.fb_at}", "interpolation": member.interpolation,
         "lookahead_mode": member.lookahead_mode, "metrics": metrics, "passed": passed, "failed_gates": [] if passed
         else ["tracking_p95_deg <= 3 (9)"],
-        "calibration": {"best_lookahead_ms": [2.0] * len(bus_ms), "twin_bus_ms": list(bus_ms)}
+        "calibration": {"lookahead_ms": [2.0] * len(bus_ms), "twin_bus_ms": list(bus_ms)}
         if member.lookahead_mode == "calibrated" else None,
         "source": "sim",
     }
