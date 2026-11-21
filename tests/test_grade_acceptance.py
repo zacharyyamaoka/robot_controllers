@@ -101,7 +101,7 @@ def test_the_population_is_the_contracts_sixteen_and_only_board_side_configs_go_
     assert layouts["P8"].feedback_at == "split"
     assert layouts["P4s"].interpolation == "secant_mid_ff" and layouts["P4"].interpolation == "tangent"
     assert all(layouts[c].feedback_at in ("board", "board_scheduled") for c in REAL_SAFE)
-    assert layouts["P3"].lookaheads(2) == base.bus.per_joint(2)  # nominal = the datasheet bus
+    np.testing.assert_allclose(layouts["P3"].lookaheads(2), base.bus.per_joint(2), rtol=0, atol=1e-12)  # nominal = the datasheet bus
     assert all(v == 0.0 for v in layouts["P2"].lookaheads(2))
 
 
