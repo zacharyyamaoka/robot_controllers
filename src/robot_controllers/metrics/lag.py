@@ -38,10 +38,11 @@ def _shifts(max_s: float, step_s: float) -> np.ndarray:
 
 
 def lag_residuals(
-    log: Any, *, max_s: float = 0.030, step_s: float = 0.00025
+    log: Any, *, max_s: float = 0.030, step_s: float = 0.00025, friction: bool = False
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
     """(shifts, residuals (J, S) = Σ_i (ref_j(t_i - τ) - q_j(t_i))², moving (J,) bool), or None when the log
-    has no reference or no plant samples in the window. `shifts` are in tie-break order."""
+    has no reference or no plant samples in the window. `shifts` are in tie-break order. `friction`: see
+    `window_residuals`."""
     if getattr(log, "ref_position", None) is None:
         return None
     sent = np.asarray(log.sent_t, dtype=float).reshape(-1)
@@ -53,7 +54,7 @@ def lag_residuals(
     window = (t >= sent[0] + WINDOW_START_S) & (t <= sent[-1])
     if not window.any():
         return None
-    return window_residuals(t[window], q[window], sent, ref, max_s=max_s, step_s=step_s)
+    return window_residuals(t[window], q[window], sent, ref, max_s=max_s, step_s=step_s, friction=friction)
 
 
 def window_residuals(
@@ -74,7 +75,10 @@ def window_residuals(
     lookahead on a 5.5 ms bus): the gearbox's dry friction, which no feed-forward carries, leaves a constant-size
     error that flips with the direction of motion; a pure shift reads it as lag, +2 to +2.75 ms on the shoulder's
     slow third move. With the term the 1 s windows read 5.0-5.8 ms (truth 5.5) and 9.0-9.8 ms after the bus
-    slowed to 9.5; on R2's fast moves the plain fit is within 0.25 ms already, so the whole-log estimate keeps it."""
+    slowed to 9.5; on R2's fast moves the plain fit is within 0.25 ms already, so the whole-log estimate keeps it.
+    What a shift measures is the bus delay plus the servo loop's own lag: on the UR5e's wrists (kp 131-158 N·m/rad,
+    0.8 N·m dry friction) the plain fit reads 10-14 ms on a 5.5 ms bus and the friction fit 7-10 ms, and looking
+    ahead by the plain fit's value tracks best (U2's path: p95 0.225° vs 0.338° at the true 5.5 ms)."""
     shifts = _shifts(max_s, step_s)
     shifted = times[None, :] - shifts[:, None]  # (S, N): ref_j is read at t_i - τ
     joints = ref.shape[1]
@@ -107,13 +111,14 @@ def _velocity(sent: np.ndarray, column: np.ndarray) -> np.ndarray:
 
 
 def estimate_lag_s(
-    log: Any, *, per_joint: bool = False, max_s: float = 0.030, step_s: float = 0.00025
+    log: Any, *, per_joint: bool = False, max_s: float = 0.030, step_s: float = 0.00025, friction: bool = False
 ) -> float | tuple[float | None, ...] | None:
     """The shift τ (s) that best lines the measured joints up with the reference (module docstring); positive
     means the arm lags the reference. `per_joint=True` gives one τ per joint, None for a joint whose
     reference moves less than 0.1° peak to peak. The whole-arm τ sums every joint with a reference and is None
-    when none of them moves (a hold has no lag to measure) or the log has no reference."""
-    found = lag_residuals(log, max_s=max_s, step_s=step_s)
+    when none of them moves (a hold has no lag to measure) or the log has no reference. `friction=True` fits a
+    friction-shaped error beside the shift (`window_residuals`; amendment 5), off by default (§4.3's estimate)."""
+    found = lag_residuals(log, max_s=max_s, step_s=step_s, friction=friction)
     if found is None:
         if not per_joint:
             return None

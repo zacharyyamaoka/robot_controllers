@@ -16,7 +16,12 @@ Two methods:
 - `xcorr`: one run at zero lookahead; each joint's delay is the shift that best lines its measured position up with
   its reference (`metrics.lag.estimate_lag_s(per_joint=True)`, clipped at >= 0, a joint that did not move given the
   median of the others). It needs the log's send times to be the real ones: the twin's are; the real arm's logger
-  stamps the exchange's end today, which bounds the delay only to one exchange (§5.9).
+  stamps the exchange's end today, which bounds the delay only to one exchange (§5.9). What it measures is the
+  *effective* lag: the bus plus the servo loop's own lag and the dry friction's look-alike. That is the lookahead
+  that tracks best, but on a joint with a slow loop it is not the bus (measured 2026-11-20 on a 5.5 ms twin bus:
+  planar calibration sweep 6.25/6.25 ms, R2's path 5.50/5.25 ms; UR5e wrists 12-13 ms on the sweep, 10-12 ms on
+  U2's path). `friction=True` fits the friction look-alike out (`estimate_lag_s(friction=True)`, as the monitor
+  does): planar sweep 5.50/5.50 ms, UR5e wrists 9-10 ms; use it to compare a bus with its datasheet.
 - `sweep`: one run per scalar lookahead (default: the nominal's mean + {-3, -1.5, 0, +1.5, +3} ms, clipped at 0);
   the measured delay is the lookahead with the lowest `tracking_p95_deg`, the same for every joint. It works on any
   log the bench can score, real ones included.
@@ -38,6 +43,19 @@ from robot_controllers.timing import BusTiming
 
 METHODS: tuple[str, ...] = ("xcorr", "sweep")
 SWEEP_OFFSETS_S: tuple[float, ...] = (-0.003, -0.0015, 0.0, 0.0015, 0.003)  # around the nominal's mean (§5.2)
+# §5.4's stand-in until robotparts carries a sourced number: mjbots' fdcanusb, about 800 exchanges/s with one moteus
+FDCANUSB_PER_DEVICE_S = 0.00125
+FDCANUSB_SOURCE = "datasheet:mjbots (fdcanusb ~800 Hz, one device)"
+
+
+def datasheet_bus(
+    joint_count: int, per_device_s: float = FDCANUSB_PER_DEVICE_S, source: str = FDCANUSB_SOURCE
+) -> BusTiming:
+    """The datasheet bus of an arm with one board per joint on one adapter, served in joint order (§5.4):
+    `BusTiming.from_datasheet(per_device_s · joints, joints, slot_order=joint order, source=...)`."""
+    return BusTiming.from_datasheet(
+        per_device_s * joint_count, joint_count, slot_order=tuple(range(joint_count)), source=source
+    )
 
 
 @dataclass(frozen=True)
@@ -98,10 +116,12 @@ def calibrate_bus(
     tolerance_s: float = 0.002,
     seed: int = 0,
     plant_factory: Callable[[], Any] | None = None,
+    friction: bool = False,
 ) -> Calibration:
     """Measure the bus `rung` runs on with `spec_at(lookahead)` (a callable lookahead -> ControllerSpec), and
     compare it with `nominal` (the module docstring has the two methods). `plant_factory` is passed to
-    `run_episode` (a scenario with other board gains, §5.3); the default is the rung's own plant."""
+    `run_episode` (a scenario with other board gains, §5.3); the default is the rung's own plant. `friction`
+    (xcorr only) fits the dry friction's look-alike out of the shift, as `monitor.LagMonitor` does."""
     if method not in METHODS:
         raise ValueError(f"method must be one of {METHODS}, got {method!r}")
     tolerance = float(tolerance_s)
@@ -112,7 +132,7 @@ def calibrate_bus(
         from robot_controllers.metrics.lag import STILL_DEG, estimate_lag_s
 
         log = _episode(spec_at(0.0), rung, seed, plant_factory)
-        lags = tuple(estimate_lag_s(log, per_joint=True))
+        lags = tuple(estimate_lag_s(log, per_joint=True, friction=friction))
         moved = [max(0.0, float(v)) for v in lags if v is not None]
         if not moved:
             raise ValueError(f"calibrate_bus: no joint moved {STILL_DEG:g} deg on {rung_id}")
@@ -123,10 +143,12 @@ def calibrate_bus(
             command_delay_s=delays,
             reply_delay_s=nominal.reply_delay_s,
             jitter_s=nominal.jitter_s,
-            source=f"calibrated:{rung_id}:xcorr",
+            source=f"calibrated:{rung_id}:xcorr" + ("+friction" if friction else ""),
         )
         curve: tuple[tuple[float, float | None], ...] = ()
-        how = "one run at zero lookahead, each joint's best-aligning shift"
+        how = "one run at zero lookahead, each joint's best-aligning shift" + (
+            " with the friction look-alike fitted out" if friction else ""
+        )
         still = [j for j, v in enumerate(lags) if v is None]
         if still:
             how += f" (joint {', '.join(str(j) for j in still)} did not move: given the others' median)"

@@ -138,3 +138,12 @@ def test_the_monitor_recovers_when_the_bus_comes_back_and_ignores_a_still_joint(
     still = LagMonitor(BusTiming(0.0055), window_s=1.0, step_s=0.25)
     assert still.update(log.t, np.zeros_like(log.q), log.sent_t, np.zeros_like(log.ref_position)) == []
     assert all(e.measured_s is None for e in still.estimates)
+
+
+def test_the_calibrate_cli_prints_measured_against_nominal(capsys):
+    from robot_controllers.bench.cli import main
+
+    assert main(["calibrate", "--bus-ms", "2", "8", "--nominal-ms", "2", "8", "--friction"]) == 0
+    out = capsys.readouterr().out
+    assert "planar_arm/calibration·bus2/8ms" in out and "WITHIN" in out
+    assert out.count("ms") > 8 and "shoulder" in out and "elbow" in out

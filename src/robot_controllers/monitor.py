@@ -70,6 +70,7 @@ class LagMonitor:
         step_s: float = 0.5,
         alert_s: float = 0.002,
         confirm: int = 2,
+        friction: bool = True,
     ) -> None:
         for name, value in (("window_s", window_s), ("step_s", step_s)):
             if not (math.isfinite(float(value)) and float(value) > 0.0):
@@ -84,6 +85,9 @@ class LagMonitor:
         self.step_s = float(step_s)
         self.alert_s = float(alert_s)
         self.confirm = int(confirm)
+        # WHY on by default: the monitor measures the bus, and the dry friction's look-alike is not the bus. Off
+        # matches a `calibrate_bus(method="xcorr")` expected value made without it (the effective lag).
+        self.friction = bool(friction)
         self.estimates: list[LagEstimate] = []  # every window's measurement, for a page or a log
         self.events: list[LagEvent] = []  # every event emitted so far
         self._joints: int | None = None
@@ -183,7 +187,7 @@ class LagMonitor:
             start_s=start,
             end_s=end,
             max_s=MAX_LAG_S,
-            friction=True,
+            friction=self.friction,
         )
         events = []
         for joint, lag in enumerate(lags):
