@@ -22,6 +22,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+import study_sections  # noqa: E402  (docs/study_sections.py: the amendment-4 study's sections)
 
 REPO = Path(__file__).resolve().parents[1]
 DATE = "2026-11-20"
@@ -278,7 +279,7 @@ code{font-size:12px;word-break:break-word}details summary{cursor:pointer;color:v
 """
 
 
-def page(ledger: Ledger) -> str:
+def page(ledger: Ledger, study: study_sections.Study | None = None) -> str:
     g = ledger.document["generated"]
     best = ledger.summary["overall"]["name"]
     jtc, jtc_la = "ff=trajectory@trajectory+fb=board_gains@board", "ff=trajectory@trajectory+fb=board_gains@board" + LA
@@ -307,11 +308,15 @@ def page(ledger: Ledger) -> str:
                  f"made by <code>docs/layouts_hero_video.py</code></figcaption></figure>") if hero else ""
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Controller Layouts</title><style>{CSS}</style></head><body><main>
-<h1>Given a feed-forward model and a feedback model, where should each run?</h1>
-<p class="muted">robot_controllers, contract amendment 3 · planar-arm MuJoCo twin with a moteus-like board (4 kHz PD, 5.5 ms
-bus down, 1.5 ms up) · {len(ledger.parts)} layouts × {len(ledger.rungs)} rungs = {len(ledger.runs)} episodes · ledger at commit
-<code>{esc(g['commit'])}</code> (clean) · {esc(g['date'])} · <b>sim only</b>; nothing here touched the arm</p>
+<h1>Controllers v1: where feed-forward and feedback run, at what rate, and how far ahead</h1>
+<p class="muted">robot_controllers, contract amendments 3 and 4 · the planar MuJoCo twin and a UR5e on a moteus-like board
+model (4 kHz PD, 5.5 ms bus down, 1.5 ms up) · first sweep: {len(ledger.parts)} layouts × {len(ledger.rungs)} rungs
+(<code>{esc(g['commit'])}</code>) · study: {len(study.rows) if study else 0} episodes over rate, speed, lookahead, bus jitter,
+per-joint delays and a moving target (<code>{esc(study.document['generated'].get('commit', '?')) if study else '—'}</code>)
+· <b>sim only</b>; nothing here touched the arm</p>
+{study_sections.top(study, MEDIA) if study else ""}
 
+<h2>The first sweep: every layout of every model (amendment 3)</h2>
 <div class="verdict">
 <p><b>Forward the trajectory, leave the feedback on the board, compute the model at plan time and sample the reference
 5.5 ms ahead (the bus delay). That's your "first step" JTC plus one parameter, and it was the best layout of the
@@ -386,29 +391,32 @@ Contract: <code>/home/bam/robot_controllers/docs/CONTRACT.md</code>, amendment 3
 <h2>Decided for you, left, and not done</h2>
 <div class="cards">
 <div class="card"><h3>Done and proved</h3><ul>
-<li>Amendment 3 built and landed on robot_controllers <code>main</code>: 331 tests pass, including all 25 acceptance tests written before the code</li>
-<li>The composed controller equals the JTC and the three impedance controllers tick for tick</li>
-<li>The closed-form arm model equals MuJoCo's <code>mj_inverse</code> to 1e-9 N·m</li>
-<li>Old ladder numbers unchanged: 50 cells × 44 metrics are bit-identical</li></ul></div>
+<li>Amendments 3 and 4 built and landed on robot_controllers <code>main</code>: 399 tests pass, including the 25 + 34 acceptance tests written before the code</li>
+<li>The study's pinned numbers (R2 at 50 Hz: 0.775° → 0.201°) were measured first by an independent scratch implementation and match to 3 %</li>
+<li>One run at zero lookahead measures the bus delay (5.5 ms on R2; 4.5–6.5 ms on U2)</li>
+<li>The UR5e's models equal MuJoCo's <code>mj_inverse</code> and <code>mj_fullM</code> to 1e-9; its gains carry the twin's bandwidth</li></ul></div>
 <div class="card"><h3>Decided for you (undo = <code>git revert</code>)</h3><ul>
-<li><code>fb_share_pct</code> became the arm's share in traj_compare's formula after the first sweep showed the worst-joint version was the elbow's quantisation buzz (contract §3.8)</li>
-<li>Lookahead added as a swept dimension (§3.8)</li>
-<li>CTC bandwidth matched to the board's shoulder kp at home: 6.3 Hz</li>
-<li>Contract erratum: the C++ node has never driven the arm</li></ul></div>
+<li>The secant velocity and mid-hold feed-forward added as a layout option (<code>interpolation</code>); the default stays today's behaviour</li>
+<li>Per-joint lookahead and per-joint bus delay, because one adapter serves the boards in turn</li>
+<li>UR5e board gains at the twin shoulder's bandwidth (ωn 39.7 rad/s, ζ 0.5) on 2^14-count encoders</li>
+<li>Bus jitter rounded to 0.25 ms ticks so a seed replays (the builder's call)</li>
+<li>From the first sweep: <code>fb_share_pct</code> in traj_compare's formula, lookahead swept, CTC at 6.3 Hz</li></ul></div>
 <div class="card"><h3>Left (next, not blocked)</h3><ul>
-<li>Give the real-arm JTC (arm_motion_bench lane J, in progress) a lookahead equal to the rig's measured bus delay</li>
-<li>Wire the identified models (pendulum round 9, <code>ff_model</code>; BAM FB inverse dynamics) as <code>FeedforwardModel</code>s and re-run on those stations</li>
-<li>An integrator amendment (moteus ki vs host)</li></ul></div>
+<li>Lane J's real JTC: a per-joint lookahead from one logged run, plus the secant velocity (on a 50 Hz tape, the forward difference to the next sample)</li>
+<li>The Nov 13 full-arm curriculum's one-tick (20 ms) lookahead and its arm ending moves ahead of the plan: calibrate it from one of its logs</li>
+<li>Friction in the feed-forward on the UR-sized arm without over-compensating at reversals (a friction observer, or a deadband)</li>
+<li>Wire the identified models (pendulum round 9 <code>ff_model</code>) as <code>FeedforwardModel</code>s</li></ul></div>
 <div class="card"><h3>Not done, on purpose</h3><ul>
-<li>No real-arm runs: that's lane J's, through rackq</li><li>No W&amp;B logging of this ledger yet (a replay is one command once wanted)</li>
-<li>No tuning per layout: every layout ran on the same gains so the comparison is of placement alone</li></ul></div>
+<li>No real-arm runs: that's lane J's, through rackq</li><li>No W&amp;B logging of these ledgers yet</li>
+<li>No tuning per layout: every layout ran on the same gains, so the comparison is of placement and timing alone</li>
+<li>No UR moving-target rung: a Cartesian line on the UR needs IK; the planar R10 answers the timing question</li></ul></div>
 </div>
 </main></body></html>"""
 
 
 def main() -> Path:
     ledger = Ledger(json.loads(LEDGER.read_text()))
-    OUT.write_text(page(ledger))
+    OUT.write_text(page(ledger, study_sections.load()))
     print(OUT, f"{OUT.stat().st_size / 1e3:.0f} kB")
     return OUT
 
