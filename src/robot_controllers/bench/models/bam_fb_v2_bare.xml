@@ -1,0 +1,67 @@
+<mujoco model="bam_fb_v2">
+  <compiler angle="radian" meshdir="../urdf/" texturedir="../urdf/" boundmass="0.001" boundinertia="1e-07"/>
+
+  <option timestep="0.001"/>
+
+  <size nkey="1"/>
+
+  <visual>
+    <global azimuth="135" elevation="-25" offwidth="1600" offheight="1200"/>
+    <headlight ambient="0.35 0.35 0.35" diffuse="0.45 0.45 0.45" specular="0.1 0.1 0.1"/>
+  </visual>
+
+  <statistic extent="0.933249" center="-0.203684 -0.0521892 -0.180074"/>
+
+  <worldbody>
+    <camera name="overview" pos="0.694957 -0.95083 0.412543" quat="0.779192 0.4964 0.205616 0.322752"/>
+    <light name="key" pos="0.0762904 -0.892113 1.68642" dir="-0.135526 0.406579 -0.903508" cutoff="36.4669" exponent="1" diffuse="0.55 0.55 0.55" specular="0.15 0.15 0.15"/>
+    <body name="base_link">
+      <inertial pos="0.076279 -0.0980811 -0.0364074" quat="0.18727 0.689671 -0.176038 0.676974" mass="4.77083" diaginertia="0.022885 0.0179698 0.00824808"/>
+      <body name="shoulder" pos="-0.016 -0.11 -0.0355">
+        <inertial pos="-0.0931175 0.0319874 -0.000934708" quat="0.417314 0.568731 -0.409406 0.578603" mass="8.6576" diaginertia="0.0409207 0.0242873 0.0222404"/>
+        <joint name="revolute_3" pos="0 0 0" axis="-1 0 0" solreflimit="0.002" solimplimit="0.99 0.99" limited="true" range="-1.57031 1.57037" actuatorfrclimited="true" actuatorfrcrange="-24.25 24.25" armature="0.0058" damping="0.005"/>
+        <body name="l1" pos="-0.1375 -0.069 0">
+          <inertial pos="0.000376408 -0.0455494 -0.0905464" quat="0.99769 -0.0612588 0.0007434 -0.0293628" mass="0.293712" diaginertia="0.00232858 0.00226658 0.000273127"/>
+          <joint name="revolute_6" pos="0 0 0" axis="0 -1 0" solreflimit="0.002" solimplimit="0.99 0.99" limited="true" range="-1.57127 2.18166" actuatorfrclimited="true" actuatorfrcrange="-24.25 24.25" armature="0.0058" damping="0.005"/>
+          <body name="l2" pos="0 -0.029 -0.24">
+            <inertial pos="-0.18288 0.0244298 -0.00483433" quat="0.540763 0.478121 0.553823 0.415038" mass="0.464658" diaginertia="0.00798029 0.00789222 0.000244174"/>
+            <joint name="revolute_8" pos="0 0 0" axis="0 1 0" limited="false" actuatorfrclimited="true" actuatorfrcrange="-100 100" armature="0.001" damping="0.005"/>
+            <body name="hard_stop" pos="-0.299658 0.0451 0">
+              <inertial pos="-0.000112894 0.0440464 7.03586e-05" quat="0.706532 0.70689 -0.0213592 -0.0257207" mass="0.293227" diaginertia="0.000241289 0.000220417 0.000101223"/>
+              <joint name="revolute_11" pos="0 0 0" axis="0 1 0" solreflimit="0.002" solimplimit="0.99 0.99" limited="true" range="-2.96444 2.96444" actuatorfrclimited="true" actuatorfrcrange="-3.47 3.47" armature="0.001" damping="0.005"/>
+              <body name="hard_stop_2" pos="-0.0140001 0.06 5.1404e-05">
+                <inertial pos="-0.0440464 0.000112894 2.37143e-05" quat="0.484614 0.481535 0.518102 0.51463" mass="0.293227" diaginertia="0.000241289 0.000220417 0.000101222"/>
+                <joint name="revolute_14" pos="0 0 0" axis="-1 0 0" solreflimit="0.002" solimplimit="0.99 0.99" limited="true" range="-2.96442 2.96442" actuatorfrclimited="true" actuatorfrcrange="-3.47 3.47" armature="0.001" damping="0.005"/>
+                <body name="hard_stop_3" pos="-0.06 0.0140001 5.1404e-05">
+                  <inertial pos="-0.00152052 0.0495693 -0.00204235" quat="0.752551 0.658434 -0.00377431 0.0108477" mass="0.30206" diaginertia="0.000331798 0.000306378 8.82085e-05"/>
+                  <joint name="revolute_17" pos="0 0 0" axis="0 1 0" solreflimit="0.002" solimplimit="0.99 0.99" limited="true" range="-2.96442 2.96442" actuatorfrclimited="true" actuatorfrcrange="-3.47 3.47" armature="0.001" damping="0.005"/>
+                  <body name="moving_finger" pos="0.0130863 0.0555 0">
+                    <inertial pos="-0.0110334 0.0433066 0.0161187" quat="0.625833 0.725024 -0.12197 0.260378" mass="0.0357022" diaginertia="3.29508e-05 3.08123e-05 5.64593e-06"/>
+                    <joint name="revolute_5" pos="0 0 0" axis="1 0 0" solreflimit="0.002" solimplimit="0.99 0.99" limited="true" range="0 1.3455" actuatorfrclimited="true" actuatorfrcrange="-3.47 3.47" armature="0.001" damping="0.005"/>
+                    <site name="tool" pos="0 0 0"/>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+        <body name="c1" pos="-0.0505 -0.089 0">
+          <inertial pos="0.0345742 -0.00295158 -0.0317273" quat="0.285 0.647523 0.647128 0.284103" mass="0.0703125" diaginertia="0.000116536 0.000110155 6.79587e-06"/>
+          <joint name="revolute_7" pos="0 0 0" axis="0 -1 0" solreflimit="0.002" solimplimit="0.99 0.99" limited="true" range="-1.96684 3.4518" actuatorfrclimited="true" actuatorfrcrange="-24.25 24.25" armature="0.0058" damping="0.005"/>
+          <body name="c2" pos="0.0884147 -0.009 -0.0811347">
+            <inertial pos="-0.045281 -0.00322981 -0.121859" quat="0.695949 0.125122 0.125122 0.695949" mass="0.122478" diaginertia="0.00104119 0.00103569 6.34921e-06"/>
+            <joint name="revolute_34" pos="0 0 0" axis="0 -1 0" limited="false" actuatorfrclimited="true" actuatorfrcrange="-100 100" armature="0.001" damping="0.005"/>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <equality>
+    <connect name="loop_revolute_9" body1="c2" body2="l2" anchor="-0.0905619 0 -0.243718" solref="0.002" solimp="0.99 0.99"/>
+  </equality>
+
+  <keyframe>
+    <key name="home" qpos="0 0.328995 0 0.481885 1.5708 0 0.671952 0.714014 0"/>
+  </keyframe>
+</mujoco>
