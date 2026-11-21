@@ -1,0 +1,39 @@
+{
+  "verified": "2026-11-20, web check by a research subagent (pages opened; paywalled DOIs via Crossref)",
+  "groups": [
+    {"name": "Compliant and impedance controller stacks", "items": [
+      {"name": "CRISP controllers", "url": "https://learnsyslab.github.io/crisp_controllers/", "extra": [["repo", "https://github.com/learnsyslab/crisp_controllers"], ["paper", "https://arxiv.org/abs/2509.06819"]], "what": "Torque-based Cartesian impedance and operational-space controllers for ros2_control, with Python and Gymnasium layers, built to track learned policies and teleoperation."},
+      {"name": "ros2_impedance_controller", "url": "https://github.com/qleonardolp/ros2_impedance_controller", "what": "Cartesian impedance on ros2_control + Pinocchio: Hogan's law with optional inertia shaping, a PD version, an MPC version in development."},
+      {"name": "FZI cartesian_controllers", "url": "https://github.com/fzi-forschungszentrum-informatik/cartesian_controllers", "what": "Cartesian motion, force and compliance controllers for ros2_control (Humble, Iron, Jazzy), on joint position or velocity interfaces."},
+      {"name": "franka_ros2 Cartesian impedance example", "url": "https://github.com/frankarobotics/franka_ros2/blob/jazzy/franka_example_controllers/src/fr3/cartesian_impedance_example_controller.cpp", "extra": [["libfranka", "https://github.com/frankarobotics/libfranka"]], "what": "Franka's reference Cartesian impedance controller for the FR3 (jazzy branch)."},
+      {"name": "MoveIt Pro admittance (JTAC)", "url": "https://docs.picknik.ai/how_to/robotics_applications/configure_admittance_controller/", "extra": [["velocity/force control", "https://docs.picknik.ai/how_to/robotics_applications/velocity_force_control/"], ["MoveIt Servo", "https://moveit.picknik.ai/main/doc/examples/realtime_servo/realtime_servo_tutorial.html"]], "what": "MoveIt's compliance lives in MoveIt Pro: a joint-trajectory admittance controller and a hybrid velocity/force controller. MoveIt itself has no impedance controller; MoveIt Servo streams real-time targets."}
+    ]},
+    {"name": "The ros2_control ecosystem", "items": [
+      {"name": "joint_trajectory_controller", "url": "https://control.ros.org/rolling/doc/ros2_controllers/joint_trajectory_controller/doc/userdoc.html", "what": "The reference JTC: interpolates joint waypoints; robot_controllers' JTC matches it tick for tick."},
+      {"name": "JTC PR #1306: sample at t + dT", "url": "https://github.com/ros-controls/ros2_controllers/pull/1306", "what": "Since Nov 2024 the JTC samples its command one control period ahead: the same idea as lookahead, for one period."},
+      {"name": "admittance_controller", "url": "https://control.ros.org/rolling/doc/ros2_controllers/admittance_controller/doc/userdoc.html", "what": "Chainable admittance from a tool F/T sensor; the JTC can feed it."},
+      {"name": "Controller chaining", "url": "https://control.ros.org/rolling/doc/ros2_control/controller_manager/doc/controller_chaining.html", "what": "Cascaded controllers run in one cycle; our layout adds where each link of the chain physically runs."}
+    ]},
+    {"name": "Drivers and timing", "items": [
+      {"name": "moteus control modes", "url": "https://mjbots.github.io/moteus/guides/control-modes/", "what": "Position, velocity and torque modes; mjbots advises putting as much of the law as possible in the drive's position controller."},
+      {"name": "moteus theory of operation", "url": "https://mjbots.github.io/moteus/reference/theory/", "what": "The drive integrates its setpoint at the commanded velocity between frames: why the secant velocity matters."},
+      {"name": "Beckhoff TwinCAT: Dead time compensation", "url": "https://infosys.beckhoff.com/content/1033/tf5065_tc3_plc_motion_control_xfc_xfc_nci/9824789771.html", "what": "Drive and encoder dead-time compensation in the motion stack."},
+      {"name": "Tomizuka 1987, ZPETC", "url": "https://doi.org/10.1115/1.3143822", "what": "Using future reference samples to cancel tracking lag; lookahead is its pure-delay case."},
+      {"name": "Smith 1957, the Smith predictor", "url": "https://www.mathworks.com/help/control/ug/control-of-processes-with-long-dead-time-the-smith-predictor.html", "what": "Delay inside a feedback loop needs prediction (Chem. Eng. Prog. 53(5):217; explainer link)."}
+    ]},
+    {"name": "Collision detection", "items": [
+      {"name": "De Luca et al. 2006, collision detection on the DLR-III arm", "url": "https://doi.org/10.1109/IROS.2006.282053", "what": "The momentum-observer residual for collision detection and reaction."},
+      {"name": "Haddadin, De Luca, Albu-Schäffer 2017, Robot Collisions survey", "url": "https://doi.org/10.1109/TRO.2017.2723903", "what": "Detection, isolation and identification of collisions."}
+    ]},
+    {"name": "Impedance classics", "items": [
+      {"name": "Hogan 1985, Impedance Control", "url": "https://doi.org/10.1115/1.3140702", "what": "Control the relationship between motion and force."},
+      {"name": "Ott 2008, Cartesian Impedance Control", "url": "https://doi.org/10.1007/978-3-540-69255-3", "what": "Redundant and flexible-joint robots."},
+      {"name": "Salisbury 1980, Active stiffness control", "url": "https://doi.org/10.1109/CDC.1980.272026", "what": "A Cartesian spring from joint servos: K_q = JᵀKJ."}
+    ]},
+    {"name": "Closest benchmarks", "items": [
+      {"name": "Port-Hamiltonian impedance control benchmarking (ICAR 2025)", "url": "https://arxiv.org/abs/2512.06423", "what": "Passivity and fidelity metrics for grading impedance controllers."},
+      {"name": "Aljalbout et al. 2024, the role of the action space", "url": "https://arxiv.org/abs/2312.03673", "what": "13 control spaces, 250+ agents, sim to real."},
+      {"name": "safe-control-gym", "url": "https://github.com/utiasDSL/safe-control-gym", "what": "PID, LQR, MPC and RL under disturbances (cart-pole, quadrotor)."}
+    ]}
+  ]
+}
