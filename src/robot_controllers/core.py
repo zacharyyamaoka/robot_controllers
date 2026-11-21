@@ -35,10 +35,16 @@ Implementation = Literal["python", "cpp"]
 _WANDB_FORBIDDEN = re.compile(r"[/\\#?%:]")
 # A controller name: snake_case, or (amendment 3, §3.6) a layout sweep point
 # `ff=<model>@<at>+fb=<model>@<at>`, whose name is its coordinates in the (feed-forward model, placement,
-# feedback model, placement) space, plus `+la=<ms>ms` for a non-zero lookahead (§3.8.2).
+# feedback model, placement) space, plus `+la=<ms>ms` for a non-zero lookahead (§3.8.2),
+# `+la=<ms>/<ms>/...ms` for one per joint and `+interp=<interpolation>` for a non-default interpolation
+# (amendment 4, §4.1).
 _SNAKE_CASE = r"[a-z][a-z0-9_]*"
-_LOOKAHEAD = r"(?:\+la=[0-9]+(?:\.[0-9]+)?ms)?"
-_LAYOUT_POINT = rf"ff={_SNAKE_CASE}@{_SNAKE_CASE}\+fb={_SNAKE_CASE}@{_SNAKE_CASE}{_LOOKAHEAD}"
+_MS = r"[0-9]+(?:\.[0-9]+)?"
+_LOOKAHEAD = rf"(?:\+la={_MS}(?:/{_MS})*ms)?"
+_INTERPOLATION = rf"(?:\+interp={_SNAKE_CASE})?"
+_LAYOUT_POINT = (
+    rf"ff={_SNAKE_CASE}@{_SNAKE_CASE}\+fb={_SNAKE_CASE}@{_SNAKE_CASE}{_LOOKAHEAD}{_INTERPOLATION}"
+)
 _CONTROLLER_NAME = re.compile(rf"{_SNAKE_CASE}|{_LAYOUT_POINT}")
 
 

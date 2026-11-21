@@ -168,15 +168,30 @@ ZERO_FEEDFORWARD = _ZeroFeedforward()
 
 FeedforwardAt = Literal["trajectory", "none", "plan", "host_reference", "host_measured"]
 FeedbackAt = Literal["board", "board_scheduled", "host", "split"]
+Interpolation = Literal["tangent", "secant", "secant_mid_ff"]
 FEEDFORWARD_AT: tuple[str, ...] = ("trajectory", "none", "plan", "host_reference", "host_measured")
 FEEDBACK_AT: tuple[str, ...] = ("board", "board_scheduled", "host", "split")
+INTERPOLATIONS: tuple[str, ...] = ("tangent", "secant", "secant_mid_ff")
 # placements that evaluate the feed-forward model (the others never call it)
 MODEL_FEEDFORWARD_AT: tuple[str, ...] = ("plan", "host_reference", "host_measured")
 
 
+def _lookahead(value: Any) -> float | tuple[float, ...]:
+    """A lookahead as a float, or a tuple of floats (one per joint), each finite and >= 0 s."""
+    if np.ndim(value) == 0:
+        number = float(value)
+        if not (math.isfinite(number) and number >= 0.0):
+            raise ValueError(f"lookahead_s must be finite and >= 0 s, got {value!r}")
+        return number
+    numbers = tuple(float(v) for v in value)
+    if not numbers or not all(math.isfinite(v) and v >= 0.0 for v in numbers):
+        raise ValueError(f"lookahead_s values must be finite and >= 0 s, got {value!r}")
+    return numbers
+
+
 @dataclass(frozen=True)
 class Layout:
-    """Where each model is evaluated and how often (CONTRACT §3.2).
+    """Where each model is evaluated and how often (CONTRACT §3.2, §4.1).
 
     - `feedforward_at`: `trajectory` (the trajectory's own effort column, 0 when absent: today's JTC), `none`
       (0), `plan` (ff on every trajectory sample once, at build and at replace_input; the tick samples that
@@ -186,31 +201,60 @@ class Layout:
       model = the board's configured gains), `board_scheduled` (gains(q_ref) every tick), `host` (the whole
       feedback as a
       torque from the measured state, board gains 0), `split` (host spring kp·(q_ref − q), board damper kd).
-    - `lookahead_s`: the reference is sampled at clock + lookahead (the bus delay a board-side law lags by).
+    - `lookahead_s`: the reference is sampled at clock + lookahead (the bus delay a board-side law lags by);
+      one value, or one per joint in the trajectory's joint order (a bus that serves its boards in turn).
+    - `interpolation` (§4.1): what the board walks between two commands. `tangent` sends the reference
+      velocity at the sample (today's); `secant` sends `(p(s + T) − p(s)) / T`, T the host period, so the
+      board's walk lands on the next sample; `secant_mid_ff` also takes the feed-forward from `s + T/2`, the
+      middle of the hold.
     """
 
     feedforward_at: FeedforwardAt = "trajectory"
     feedback_at: FeedbackAt = "board"
-    lookahead_s: float = 0.0
+    lookahead_s: float | tuple[float, ...] = 0.0
+    interpolation: Interpolation = "tangent"
 
     def __post_init__(self) -> None:
         if self.feedforward_at not in FEEDFORWARD_AT:
             raise ValueError(f"feedforward_at must be one of {FEEDFORWARD_AT}, got {self.feedforward_at!r}")
         if self.feedback_at not in FEEDBACK_AT:
             raise ValueError(f"feedback_at must be one of {FEEDBACK_AT}, got {self.feedback_at!r}")
-        lookahead = float(self.lookahead_s)
-        if not (math.isfinite(lookahead) and lookahead >= 0.0):
-            raise ValueError(f"lookahead_s must be finite and >= 0 s, got {self.lookahead_s!r}")
-        object.__setattr__(self, "lookahead_s", lookahead)
+        if self.interpolation not in INTERPOLATIONS:
+            raise ValueError(f"interpolation must be one of {INTERPOLATIONS}, got {self.interpolation!r}")
+        object.__setattr__(self, "lookahead_s", _lookahead(self.lookahead_s))
+
+    @property
+    def per_joint(self) -> bool:
+        """Whether the lookahead is given per joint (a tuple), even if every value is the same."""
+        return isinstance(self.lookahead_s, tuple)
+
+    def lookaheads(self, joint_count: int) -> np.ndarray:
+        """The lookahead of each of `joint_count` joints (s); a tuple of another length raises ValueError."""
+        if not self.per_joint:
+            return np.full(joint_count, self.lookahead_s)
+        if len(self.lookahead_s) != joint_count:
+            raise ValueError(
+                f"lookahead_s has {len(self.lookahead_s)} values for {joint_count} joints; give one value, "
+                "or one per joint in the trajectory's order"
+            )
+        return np.array(self.lookahead_s, dtype=np.float64)
 
     @property
     def name(self) -> str:
-        """`plan+board` (with `+lookahead=0.008s` when set): how diagnostics and pages name it."""
+        """`plan+board` (with `+lookahead=0.008s` or `+lookahead=0.002/0.008s` when set, and `+interp=secant`
+        for a non-default interpolation): how diagnostics and pages name it."""
         text = f"{self.feedforward_at}+{self.feedback_at}"
-        return text if self.lookahead_s == 0.0 else f"{text}+lookahead={self.lookahead_s:g}s"
+        if self.per_joint and any(self.lookahead_s):
+            text += "+lookahead=" + "/".join(f"{v:g}" for v in self.lookahead_s) + "s"
+        elif not self.per_joint and self.lookahead_s != 0.0:
+            text += f"+lookahead={self.lookahead_s:g}s"
+        return text if self.interpolation == "tangent" else f"{text}+interp={self.interpolation}"
 
-    def check(self, feedforward: Any, feedback: Any) -> None:
-        """Raise ValueError when this layout cannot place these models (CONTRACT §3.2's invalid pairs)."""
+    def check(self, feedforward: Any, feedback: Any, joint_count: int | None = None) -> None:
+        """Raise ValueError when this layout cannot place these models (CONTRACT §3.2's invalid pairs), or
+        when a per-joint lookahead does not have `joint_count` values (§4.1)."""
+        if joint_count is not None:
+            self.lookaheads(joint_count)
         if self.feedforward_at in MODEL_FEEDFORWARD_AT and feedforward is None:
             raise ValueError(
                 f"feedforward_at={self.feedforward_at!r} evaluates a feed-forward model; none was given"

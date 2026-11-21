@@ -14,11 +14,11 @@ space:
     controller = LayoutController(trajectory, config)
 
 Time-driven exactly as the JTC (`TrajectoryClock`, `TrajectorySampler`): the clock adds each tick's dt (the
-first tick after an input samples t = 0), the reference is sampled at clock + lookahead, held at rest after
-the end (`status == "done"`), the optional path tolerance aborts and holds where the arm was measured, and
-`replace_input` runs a new trajectory from the next tick. The reference acceleration is the trajectory's own
-`accelerations`, else the finite difference of its velocities on its own grid (`np.gradient`), sampled
-linearly and held at the ends.
+first tick after an input samples t = 0), the reference is sampled at clock + lookahead (one lookahead, or
+each joint at its own, §4.1), held at rest after the end (`status == "done"`), the optional path tolerance
+aborts and holds where the arm was measured, and `replace_input` runs a new trajectory from the next tick.
+The reference acceleration is the trajectory's own `accelerations`, else the finite difference of its
+velocities on its own grid (`np.gradient`), sampled linearly and held at the ends.
 
 What a tick evaluates is the layout's choice (see `models.Layout`): `plan` evaluates `ff` once per trajectory
 sample at load (build and replace_input) and the tick only interpolates that column; `host_*` evaluate `ff`
@@ -26,6 +26,12 @@ every tick; `host` and `split` evaluate the feedback every tick on the measured 
 feed-forward field. `last_split()` says how much of that field was feed-forward and how much host feedback;
 `diagnostics()["plan_compute_s"]` is the thread CPU time spent evaluating `ff` at plan time (the cost the
 tick's own timing never sees).
+
+Interpolation (amendment 4, §4.1): between two commands the board walks its setpoint at the sent velocity and
+holds the feed-forward. `tangent` (the default) sends the reference velocity at the sample time s; `secant`
+sends `(p(s + T) - p(s)) / T`, T = `control_period_s`, so the walk lands on the next sample; `secant_mid_ff`
+also reads everything the feed-forward takes from the reference at `s + T/2`, the middle of the hold. Host and
+split feedback still act on the reference at s; split's board damper tracks the secant velocity.
 """
 
 from __future__ import annotations
@@ -87,12 +93,22 @@ class LayoutConfig:
         "Largest |reference - measured position| before the controller aborts and holds where the arm is; "
         "None = no guard (ros2_control JTC path tolerance).",
     )
+    control_period_s: float = param(
+        0.01,
+        "s",
+        "The host period T a secant interpolation spans (the bench sets it from the rung's rate, as a "
+        "deployment would); the tangent default never reads it. Default 0.01 s = the rack host's 100 Hz.",
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.layout, Layout):
             raise TypeError(
                 f"layout must be a robot_controllers.models.Layout, got {type(self.layout).__name__}"
             )
+        period = float(self.control_period_s)
+        if not (math.isfinite(period) and period > 0.0):
+            raise ValueError(f"control_period_s must be finite and > 0, got {self.control_period_s!r}")
+        object.__setattr__(self, "control_period_s", period)
         for name in ("max_effort_nm", "path_tolerance_rad"):
             object.__setattr__(self, name, normalize_per_joint(getattr(self, name), name, allow_none=True))
 
@@ -171,7 +187,9 @@ class LayoutController:
         self._fb = self.config.feedback
         self._ff_at = layout.feedforward_at
         self._fb_at = layout.feedback_at
-        self._lookahead = layout.lookahead_s
+        self._period = self.config.control_period_s
+        self._secant = layout.interpolation != "tangent"
+        self._mid_ff = layout.interpolation == "secant_mid_ff"
         # what a tick has to read from the measured state
         self._needs_position = self._ff_at == "host_measured" or self._fb_at in ("host", "split")
         self._needs_velocity = self._ff_at == "host_measured" or self._fb_at == "host"
@@ -190,6 +208,7 @@ class LayoutController:
         sampler = TrajectorySampler(trajectory)
         names = sampler.joint_names
         count = len(names)
+        lookaheads = self.layout.lookaheads(count)  # raises on a per-joint lookahead of another length
         max_effort = per_joint(self.config.max_effort_nm, names, "max_effort_nm")
         tolerance = per_joint(self.config.path_tolerance_rad, names, "path_tolerance_rad")
         times: list[float] = trajectory.t.tolist()
@@ -232,6 +251,19 @@ class LayoutController:
         )
         self.trajectory = trajectory
         self._sampler = sampler
+        self._count = count
+        # WHY one float when every joint looks as far ahead: that path is today's tick, operation for
+        # operation, so the default (and a tuple of equal values) commands bit for bit what it did before.
+        if np.all(lookaheads == lookaheads[0]):
+            self._lookahead: float | np.ndarray = float(lookaheads[0])
+            self._groups: tuple[tuple[int, np.ndarray], ...] = ()
+        else:
+            lookaheads.setflags(write=False)
+            self._lookahead = lookaheads
+            self._groups = tuple(
+                (int(np.flatnonzero(lookaheads == value)[0]), np.flatnonzero(lookaheads == value))
+                for value in dict.fromkeys(lookaheads.tolist())
+            )
         self._names = template.name
         self._selector = JointSelector(names)
         self._tolerance = tolerance
@@ -259,13 +291,19 @@ class LayoutController:
             self._selector.check(state)
             self._last_ff = self._last_fb = self._zeros
             return self._hold, {}
-        sample_time = time + self._lookahead
-        reference_position, reference_velocity, reference_effort = self._sampler.sample(sample_time)
+        sample_time = time + self._lookahead  # a float, or one time per joint
+        reference_position, reference_velocity, reference_effort = self._sample(sample_time)
         end = self._sampler.end_time
         at_rest = sample_time + END_TOLERANCE_S >= end
-        if at_rest:
-            # WHY at rest: as the JTC, the hold after the end must not carry the last sample's velocity
-            reference_velocity = self._zeros
+        # WHY at rest: as the JTC, the hold after the end must not carry the last sample's velocity
+        reference_velocity = self._rest(reference_velocity, at_rest)
+        command_velocity = reference_velocity
+        if self._secant:
+            # WHY the secant (§4.1): the board walks its setpoint at the sent velocity for one host period;
+            # sent as (p(s + T) - p(s)) / T the walk lands on the next sample instead of leaving the curve
+            # along its tangent, an error that grows with T². The trajectory is known ahead: one more sample.
+            ahead = self._sample(sample_time + self._period)[0]
+            command_velocity = self._rest((ahead - reference_position) / self._period, at_rest)
         if time + END_TOLERANCE_S >= end and self.status == "running":
             self.status = "done"
             self.message = f"trajectory ended at {end:.3f} s; holding its last sample"
@@ -284,7 +322,7 @@ class LayoutController:
                 return self._abort(measured_position, error, off_path), {}
 
         feedforward = self._feedforward(
-            sample_time,
+            sample_time + 0.5 * self._period if self._mid_ff else sample_time,
             at_rest,
             reference_position,
             reference_velocity,
@@ -302,7 +340,7 @@ class LayoutController:
             return ServoCommand(
                 name=self._names,
                 position=reference_position,
-                velocity=reference_velocity,
+                velocity=command_velocity,
                 # WHY None for "none": no feed-forward is one register fewer on the bus, and the board adds 0
                 feedforward_effort=None if self._ff_at == "none" else feedforward,
                 stiffness=stiffness,
@@ -332,7 +370,7 @@ class LayoutController:
         return ServoCommand(
             name=self._names,
             position=self._no_position,
-            velocity=reference_velocity,
+            velocity=command_velocity,
             feedforward_effort=feedforward + host_feedback,
             stiffness=self._zeros,
             damping=self._damping,
@@ -341,29 +379,63 @@ class LayoutController:
 
     def _feedforward(
         self,
-        sample_time: float,
-        at_rest: bool,
+        ff_time: float | np.ndarray,
+        at_rest: bool | np.ndarray,
         reference_position: np.ndarray,
         reference_velocity: np.ndarray,
         reference_effort: np.ndarray,
         measured_position: np.ndarray | None,
         measured_velocity: np.ndarray | None,
     ) -> np.ndarray:
+        """The feed-forward the layout places, from the reference at `ff_time`: the sample time itself, or
+        the middle of the hold for `secant_mid_ff` (then everything it reads from the reference moves)."""
         ff_at = self._ff_at
-        if ff_at == "trajectory":
-            return reference_effort
         if ff_at == "none":
             return self._zeros
+        mid = self._mid_ff
+        if ff_at == "trajectory":
+            return self._sample(ff_time)[2] if mid else reference_effort
         if ff_at == "plan":
-            return self._plan_column.at(sample_time)
+            return self._column(self._plan_column, ff_time)
+        if mid:
+            at_rest = ff_time + END_TOLERANCE_S >= self._sampler.end_time
+            reference_position, reference_velocity, _ = self._sample(ff_time)
+            reference_velocity = self._rest(reference_velocity, at_rest)
         # WHY zero acceleration at rest: the hold after the end is at rest (velocity zeroed above), so its
         # acceleration is zero too; inside the trajectory it is the sampled reference acceleration.
-        acceleration = self._zeros if at_rest else self._acceleration_column.at(sample_time)
+        acceleration = self._rest(self._column(self._acceleration_column, ff_time), at_rest)
         if ff_at == "host_reference":
             values = self._ff(reference_position, reference_velocity, acceleration)
         else:  # host_measured: position/velocity terms at the measured state, acceleration from the reference
             values = self._ff(measured_position, measured_velocity, acceleration)
         return np.asarray(values, dtype=np.float64)
+
+    # ── sampling at one time, or at each joint's own (§4.1) ──────────────────────────────────────────────
+
+    def _sample(self, time: float | np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """The sampler's (position, velocity, effort) at `time`, or with one time per joint each joint's at
+        its own: one sampler call per distinct lookahead."""
+        if not self._groups:
+            return self._sampler.sample(time)
+        position, velocity, effort = (np.empty(self._count) for _ in range(3))
+        for first, joints in self._groups:
+            p, v, e = self._sampler.sample(float(time[first]))
+            position[joints], velocity[joints], effort[joints] = p[joints], v[joints], e[joints]
+        return position, velocity, effort
+
+    def _column(self, column: _Column, time: float | np.ndarray) -> np.ndarray:
+        if not self._groups:
+            return column.at(time)
+        out = np.empty(self._count)
+        for first, joints in self._groups:
+            out[joints] = column.at(float(time[first]))[joints]
+        return out
+
+    def _rest(self, values: np.ndarray, at_rest: bool | np.ndarray) -> np.ndarray:
+        """`values` with the joints whose sample is at rest (past the end) set to zero."""
+        if not self._groups:
+            return self._zeros if at_rest else values
+        return np.where(at_rest, 0.0, values) if at_rest.any() else values
 
     def _abort(self, measured: np.ndarray, error: np.ndarray, off_path: np.ndarray) -> ServoCommand:
         worst = int(np.argmax(np.where(off_path, np.nan_to_num(error, nan=np.inf), -1.0)))
@@ -410,7 +482,10 @@ class LayoutController:
             "layout": self.layout.name,
             "feedforward_at": self._ff_at,
             "feedback_at": self._fb_at,
-            "lookahead_s": self._lookahead,
+            # a per-joint lookahead reports its largest here and each joint's below
+            "lookahead_s": float(np.max(self._lookahead)),
+            "interpolation": self.layout.interpolation,
+            "control_period_s": self._period,
             "plan_compute_s": self.plan_compute_s,
             "plan_loads": self.plan_loads,
             "status": self.status,
@@ -419,6 +494,9 @@ class LayoutController:
             "trajectory_end_s": self._sampler.end_time,
             "message": self.message,
         }
+        if self.layout.per_joint:
+            for name, lookahead in zip(self._names, self.layout.lookaheads(self._count), strict=True):
+                report[f"lookahead_s.{name}"] = float(lookahead)
         if self._stiffness is not None:
             for name, stiffness, damping in zip(self._names, self._stiffness, self._damping, strict=True):
                 report[f"stiffness_nm_rad.{name}"] = float(stiffness)

@@ -183,7 +183,9 @@ def test_one_real_sweep_document_is_results_1_with_the_layout_summary(tmp_path):
     assert [c["lookahead_s"] for c in document["controllers"]] == [0.0, 0.0055] * 3
     assert len(document["results"]) == 6 and all(not r["trace"] for r in document["results"])
     config = document["controllers"][0]["config"]
-    assert config["layout"] == {"feedforward_at": "plan", "feedback_at": "board", "lookahead_s": 0.0}
+    assert config["layout"] == {
+        "feedforward_at": "plan", "feedback_at": "board", "lookahead_s": 0.0, "interpolation": "tangent"
+    }  # amendment 4 (§4.1) added the interpolation field
     assert config["feedforward"].startswith("planar_arm_feedforward(")  # a stable repr, not an address
     summary = document["summary"]["layouts"]
     assert summary["ctc"]["bandwidth_hz"] == pytest.approx(layouts.ctc_bandwidth_hz())

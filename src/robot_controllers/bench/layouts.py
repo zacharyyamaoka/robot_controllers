@@ -46,6 +46,8 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from robot_controllers.bench.arm import ARM, HOME_Q, ArmConfig
 from robot_controllers.bench.arm_models import RIGID_BODY, planar_arm_feedforward, planar_arm_mass_matrix
 from robot_controllers.bench.board import BoardConfig
@@ -62,6 +64,7 @@ from robot_controllers.registry import JOINT_TRAJECTORY
 
 FEEDFORWARD_MODELS: tuple[str, ...] = ("trajectory", "none", "gravity", "rigid_body", "rigid_body_coulomb")
 FEEDBACK_MODELS: tuple[str, ...] = ("board_gains", "pd", "ctc")
+ARMS: tuple[str, ...] = ("planar_arm",)  # the plants a layout's model names resolve on
 SWEPT_RUNGS: tuple[str, ...] = (
     "R1.FreeSpace",
     "R2.FastFreeSpace",
@@ -160,10 +163,29 @@ def feedback_placements(model: str) -> tuple[str, ...]:
     return FEEDBACK_AT
 
 
-def layout_name(ff_model: str, ff_at: str, fb_model: str, fb_at: str, lookahead_s: float = 0.0) -> str:
-    """`ff=<model>@<at>+fb=<model>@<at>`, plus `+la=<ms>ms` for a non-zero lookahead."""
+def lookahead_text(lookahead_s: float | Sequence[float]) -> str:
+    """A lookahead in ms as names spell it: `5.5`, or one per joint `1.5/3.7`; "" for none (all zero)."""
+    if np.ndim(lookahead_s) == 0:
+        return "" if float(lookahead_s) == 0.0 else f"{float(lookahead_s) * 1e3:g}"
+    values = [float(v) for v in lookahead_s]
+    return "" if not any(values) else "/".join(f"{v * 1e3:g}" for v in values)
+
+
+def layout_name(
+    ff_model: str,
+    ff_at: str,
+    fb_model: str,
+    fb_at: str,
+    lookahead_s: float | Sequence[float] = 0.0,
+    interpolation: str = "tangent",
+) -> str:
+    """`ff=<model>@<at>+fb=<model>@<at>`, plus `+la=<ms>ms` (`+la=<ms>/<ms>/...ms` per joint) for a non-zero
+    lookahead and `+interp=<interpolation>` for a non-default interpolation (CONTRACT §4.1)."""
     name = f"ff={ff_model}@{ff_at}+fb={fb_model}@{fb_at}"
-    return name if lookahead_s == 0.0 else f"{name}+la={lookahead_s * 1e3:g}ms"
+    ahead = lookahead_text(lookahead_s)
+    if ahead:
+        name += f"+la={ahead}ms"
+    return name if interpolation == "tangent" else f"{name}+interp={interpolation}"
 
 
 def sweep_points(
@@ -183,14 +205,23 @@ def sweep_points(
 
 
 def layout_spec(
-    ff_model: str, ff_at: str, fb_model: str, fb_at: str, lookahead_s: float = 0.0
+    ff_model: str,
+    ff_at: str,
+    fb_model: str,
+    fb_at: str,
+    lookahead_s: float | Sequence[float] = 0.0,
+    interpolation: str = "tangent",
+    arm: str = "planar_arm",
 ) -> ControllerSpec:
     """The LayoutController for one sweep point, as a built ControllerSpec named
-    `ff=<model>@<at>+fb=<model>@<at>` (`+la=<ms>ms` with a lookahead).
+    `ff=<model>@<at>+fb=<model>@<at>` (`+la=<ms>ms` with a lookahead, `+interp=<value>` with a non-default
+    interpolation).
 
     Raises ValueError for a pair the layout cannot place (`trajectory` only @trajectory, `none` only @none, a
     model only @plan/@host_*, `board_gains` only @board).
     """
+    if arm not in ARMS:
+        raise ValueError(f"unknown arm {arm!r}; known: {ARMS}")
     if ff_at not in feedforward_placements(ff_model):
         raise ValueError(
             f"feed-forward {ff_model!r} cannot be placed at {ff_at!r}; "
@@ -201,7 +232,7 @@ def layout_spec(
             f"feedback {fb_model!r} cannot be placed at {fb_at!r}; it goes at {feedback_placements(fb_model)}"
         )
     feedforward, feedback = feedforward_model(ff_model), feedback_model(fb_model)
-    layout = Layout(ff_at, fb_at, lookahead_s=lookahead_s)
+    layout = Layout(ff_at, fb_at, lookahead_s=lookahead_s, interpolation=interpolation)
     layout.check(feedforward, feedback)
     ff_text = {"trajectory": "the trajectory's own effort column", "none": "no feed-forward"}.get(
         ff_model, f"the {ff_model} model evaluated at {ff_at.replace('_', ' ')}"
@@ -211,13 +242,15 @@ def layout_spec(
         if fb_model == "board_gains"
         else f"{fb_model} feedback on the {fb_at.replace('_', ' ')}"
     )
-    ahead = (
-        "" if layout.lookahead_s == 0.0 else f", the reference sampled {layout.lookahead_s * 1e3:g} ms ahead"
-    )
+    ahead_ms = lookahead_text(layout.lookahead_s)
+    ahead = "" if not ahead_ms else f", the reference sampled {ahead_ms} ms ahead"
+    if layout.interpolation != "tangent":
+        ahead += f", {layout.interpolation.replace('_', ' ')} interpolation"
     return ControllerSpec(
-        name=layout_name(ff_model, ff_at, fb_model, fb_at, layout.lookahead_s),
+        name=layout_name(ff_model, ff_at, fb_model, fb_at, layout.lookahead_s, layout.interpolation),
         title=f"ff {ff_model} @ {ff_at} + fb {fb_model} @ {fb_at}"
-        + ("" if layout.lookahead_s == 0.0 else f" + lookahead {layout.lookahead_s * 1e3:g} ms"),
+        + ("" if not ahead_ms else f" + lookahead {ahead_ms} ms")
+        + ("" if layout.interpolation == "tangent" else f" + {layout.interpolation}"),
         box=JOINT_TRAJECTORY,
         runs_on=_RUNS_ON[fb_at],
         summary=f"The layout controller with {ff_text} and {fb_text}{ahead}.",
