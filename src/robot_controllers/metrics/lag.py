@@ -27,6 +27,7 @@ import numpy as np
 
 WINDOW_START_S = 0.05  # skip the first 50 ms after the first command: the arm starts from the board's hold
 STILL_DEG = 0.1  # a joint whose reference moves less than this peak to peak has no lag to measure
+FRICTION_SMOOTHING_RAD_S = 0.01  # the friction term's tanh(qd / 0.01 rad/s), as the coulomb feed-forward (§3.1)
 
 
 def _shifts(max_s: float, step_s: float) -> np.ndarray:
@@ -52,7 +53,28 @@ def lag_residuals(
     window = (t >= sent[0] + WINDOW_START_S) & (t <= sent[-1])
     if not window.any():
         return None
-    times, measured = t[window], q[window]
+    return window_residuals(t[window], q[window], sent, ref, max_s=max_s, step_s=step_s)
+
+
+def window_residuals(
+    times: np.ndarray,
+    measured: np.ndarray,
+    sent: np.ndarray,
+    ref: np.ndarray,
+    *,
+    max_s: float = 0.030,
+    step_s: float = 0.00025,
+    friction: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """`lag_residuals` on plant samples the caller has already chosen (`times` (N,), `measured` (N, J)) against
+    the host ticks `sent` (K,), `ref` (K, J): the core the whole-log estimate and the live monitor (§5.2) share.
+
+    `friction=True` also fits, at each shift, a friction-shaped error b_j · tanh(qd_ref_j(t_i - τ) / 0.01 rad/s)
+    (least squares in b_j) and scores what is left. WHY (measured 2026-11-20, R1 at 100 Hz, v1 recipe at 5.5 ms
+    lookahead on a 5.5 ms bus): the gearbox's dry friction, which no feed-forward carries, leaves a constant-size
+    error that flips with the direction of motion; a pure shift reads it as lag, +2 to +2.75 ms on the shoulder's
+    slow third move. With the term the 1 s windows read 5.0-5.8 ms (truth 5.5) and 9.0-9.8 ms after the bus
+    slowed to 9.5; on R2's fast moves the plain fit is within 0.25 ms already, so the whole-log estimate keeps it."""
     shifts = _shifts(max_s, step_s)
     shifted = times[None, :] - shifts[:, None]  # (S, N): ref_j is read at t_i - τ
     joints = ref.shape[1]
@@ -67,7 +89,21 @@ def lag_residuals(
         moving[j] = math.degrees(float(np.ptp(seen))) >= STILL_DEG
         error = np.interp(shifted, sent, column) - measured[:, j][None, :]
         residuals[j] = np.einsum("sn,sn->s", error, error)
+        if friction:
+            shape = np.tanh(np.interp(shifted, sent, _velocity(sent, column)) / FRICTION_SMOOTHING_RAD_S)
+            norm = np.einsum("sn,sn->s", shape, shape)
+            fit = np.einsum("sn,sn->s", error, shape)
+            residuals[j] -= np.divide(fit * fit, norm, out=np.zeros_like(norm), where=norm > 0.0)
     return shifts, residuals, moving
+
+
+def _velocity(sent: np.ndarray, column: np.ndarray) -> np.ndarray:
+    """The reference's velocity on its own ticks (finite differences; 0 where two ticks share a time)."""
+    if sent.size < 2:
+        return np.zeros_like(column)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        velocity = np.gradient(column, sent)
+    return np.nan_to_num(velocity, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 def estimate_lag_s(
@@ -92,6 +128,40 @@ def estimate_lag_s(
         return None
     total = np.nansum(residuals, axis=0)
     return float(shifts[int(np.argmin(total))])
+
+
+def lags_in_window(
+    t: np.ndarray,
+    q: np.ndarray,
+    sent_t: np.ndarray,
+    ref_position: np.ndarray,
+    *,
+    start_s: float,
+    end_s: float,
+    max_s: float = 0.030,
+    step_s: float = 0.00025,
+    friction: bool = False,
+) -> tuple[float | None, ...]:
+    """Each joint's lag (s, + = behind) over the plant samples in [start_s, end_s] that a host tick covers (t <=
+    the last `sent_t`), as `estimate_lag_s(per_joint=True)` (with `friction`, see `window_residuals`); None for a
+    joint whose reference moved less than 0.1° peak to peak there, and every joint None when the window has no
+    samples."""
+    t = np.asarray(t, dtype=float).reshape(-1)
+    q = np.atleast_2d(np.asarray(q, dtype=float))
+    sent = np.asarray(sent_t, dtype=float).reshape(-1)
+    ref = np.atleast_2d(np.asarray(ref_position, dtype=float))
+    joints = q.shape[1] if q.size else ref.shape[1]
+    if sent.size < 2 or t.size == 0:
+        return (None,) * joints
+    window = (t >= start_s) & (t <= min(end_s, float(sent[-1])))
+    if not window.any():
+        return (None,) * joints
+    shifts, residuals, moving = window_residuals(
+        t[window], q[window], sent, ref, max_s=max_s, step_s=step_s, friction=friction
+    )
+    return tuple(
+        float(shifts[int(np.argmin(residuals[j]))]) if moving[j] else None for j in range(len(moving))
+    )
 
 
 def calibrate_lookahead(spec_at: Callable[[float], Any], rung: Any, *, seed: int = 0) -> tuple[float, ...]:

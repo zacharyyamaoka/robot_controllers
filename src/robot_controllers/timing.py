@@ -84,3 +84,14 @@ class BusTiming:
     @classmethod
     def from_calibration(cls, lags_s: Sequence[float], *, reply_delay_s: float = 0.0015, source: str) -> BusTiming:
         return cls(command_delay_s=tuple(max(0.0, float(v)) for v in lags_s), reply_delay_s=reply_delay_s, source=source)
+
+
+def lookahead_from(bus: BusTiming, count: int) -> tuple[float, ...]:
+    """The per-joint lookahead (s) a board-side controller should sample its reference ahead by on `bus`: each
+    joint's command delay (lane A, §5.2).
+
+    WHY the command delay alone: a board-side law runs the setpoint the moment it latches, so the reference it
+    tracks is late by exactly the command's trip; the reply delay only ages the state the host reads, which a
+    board-side law never uses (2026-11-12 finding; study: the V-curve's floor sits at the command delay).
+    """
+    return bus.per_joint(count)

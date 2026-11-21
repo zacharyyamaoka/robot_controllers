@@ -19,6 +19,7 @@ from typing import Any, Literal
 import numpy as np
 
 from robot_controllers.core import Box
+from robot_controllers.timing import BusTiming
 
 # ── timing and scene: what a rung sets up ───────────────────────────────────────────────────────────────────
 
@@ -33,6 +34,10 @@ class HostTiming:
     generator seeded from the episode seed (the host's wake-jitter draws never shift; the plant rounds u to
     whole board ticks). Latches stay first in, first out per joint, as on a CAN bus. The defaults are the
     episode as before.
+
+    Amendment 5 (§5.2): `command_delay_steps = ((t_s, delay_s | per-joint tuple), ...)` changes the bus mid-run:
+    a command sent at or after t_s uses that delay (the last step at or before its send time wins), so the twin
+    can play a bus that slows down. `from_bus(bus, rate_hz)` is the timing a `BusTiming` implies.
     """
 
     rate_hz: float = 100.0
@@ -42,6 +47,8 @@ class HostTiming:
     stalls: tuple[tuple[float, float], ...] = ()  # (start_s, duration_s): the host does not wake in that window
     include_compute: bool = True  # send time = wake time + the measured tick compute time
     command_delay_jitter_s: float = 0.0  # +- bound of the uniform draw added to each command's delay (s)
+    # (t_s, delay): from each t_s on, commands sent use that delay (one value or one per joint); () = never
+    command_delay_steps: tuple[tuple[float, float | tuple[float, ...]], ...] = ()
 
     def __post_init__(self) -> None:
         delay = self.command_delay_s
@@ -55,6 +62,32 @@ class HostTiming:
         jitter = float(self.command_delay_jitter_s)
         if not (math.isfinite(jitter) and jitter >= 0.0):
             raise ValueError(f"command_delay_jitter_s must be finite and >= 0 s, got {jitter!r}")
+        steps = []
+        for step in self.command_delay_steps:
+            at, step_delay = step
+            at = float(at)
+            step_values = (float(step_delay),) if np.ndim(step_delay) == 0 else tuple(float(v) for v in step_delay)
+            if not math.isfinite(at) or not step_values or not all(
+                math.isfinite(v) and v >= 0.0 for v in step_values
+            ):
+                raise ValueError(f"command_delay_steps entries are (t_s, delay_s >= 0), got {step!r}")
+            steps.append((at, step_values[0] if np.ndim(step_delay) == 0 else step_values))
+        if any(later[0] < earlier[0] for earlier, later in zip(steps, steps[1:], strict=False)):
+            raise ValueError(f"command_delay_steps must be in time order, got {self.command_delay_steps!r}")
+        object.__setattr__(self, "command_delay_steps", tuple(steps))
+
+    @classmethod
+    def from_bus(cls, bus: BusTiming, rate_hz: float, **fields: Any) -> HostTiming:
+        """The host timing a bus implies at `rate_hz`: its command delay (per joint when it has one per
+        joint), reply delay and jitter (as `command_delay_jitter_s`); every other field at its default or
+        `fields`."""
+        return cls(
+            rate_hz=float(rate_hz),
+            command_delay_s=bus.command_delay_s,
+            reply_delay_s=bus.reply_delay_s,
+            command_delay_jitter_s=bus.jitter_s,
+            **fields,
+        )
 
     @property
     def period_s(self) -> float:
@@ -69,6 +102,18 @@ class HostTiming:
                 f"command_delay_s has {len(self.command_delay_s)} values for {joint_count} plant joints"
             )
         return tuple(self.command_delay_s)
+
+    def delay_steps(self, joint_count: int) -> tuple[tuple[float, tuple[float, ...]], ...]:
+        """`command_delay_steps` with each delay as one value per joint (a tuple of another length raises)."""
+        out = []
+        for at, delay in self.command_delay_steps:
+            if np.ndim(delay) == 0:
+                out.append((at, (float(delay),) * joint_count))
+            elif len(delay) != joint_count:
+                raise ValueError(f"command_delay_steps at {at:g} s has {len(delay)} values for {joint_count} joints")
+            else:
+                out.append((at, tuple(delay)))
+        return tuple(out)
 
 
 @dataclass(frozen=True)

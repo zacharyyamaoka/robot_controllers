@@ -80,6 +80,7 @@ class ServoPlant:
 
     def _reset_bus(self, seed: int, timing: HostTiming) -> None:
         self._delays = timing.command_delays(len(self.joint_names))
+        self._delay_steps = timing.delay_steps(len(self.joint_names))
         self._delay_jitter = float(timing.command_delay_jitter_s)
         self._bus_rng = np.random.default_rng([int(seed), BUS_JITTER_STREAM])
         self._last_latch = [-math.inf] * len(self.joint_names)
@@ -124,6 +125,11 @@ class ServoPlant:
         command each board ran (-1 = the pre-roll hold), so a host-tick row (one per write) maps onto the
         physics steps."""
         sent = float(command.header.stamp)
+        delays = self._delays
+        for at, step_delays in self._delay_steps:  # amendment 5: the bus as it is at the send time
+            if sent < at:
+                break
+            delays = step_delays
         jitter = 0.0
         if self._delay_jitter > 0.0:
             draw = float(self._bus_rng.uniform(-self._delay_jitter, self._delay_jitter))
@@ -135,7 +141,7 @@ class ServoPlant:
             bound = math.floor(self._delay_jitter / self._dt + 1e-9)
             jitter = min(max(round(draw / self._dt), -bound), bound) * self._dt
         latch = []
-        for j, delay in enumerate(self._delays):
+        for j, delay in enumerate(delays):
             # WHY max with the previous latch: a CAN bus delivers in order, so a command that would arrive
             # before the one sent ahead of it waits for it and latches on the same board tick
             at = max(sent + (delay + jitter if jitter else delay), self._last_latch[j])
