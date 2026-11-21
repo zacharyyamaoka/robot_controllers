@@ -23,6 +23,13 @@ from robot_controllers.models import ModelError
 BAM_PID_TUNNING = Path("/home/bam/bam_ws/src/core/mdp/setup/bam_pid_tunning/src")
 PENDULUM_FF = Path("/home/bam/arm_motion_bench/src/arm_motion_bench/baselines/pendulum_ff.py")
 FIVEBAR_JOINTS = ("j1", "j2", "c1", "w1", "w2", "w3")
+# The five-bar twin runs the gains the real arm ran on 2026-11-20 (fullarm_jtc report run_jtc-20261121T021137Z,
+# `gains`): moteus as-found gains (N·m per output rev) x the scales fullarm_jtc sent, and its raised five-bar caps. WHY
+# deployed, not as-found (dispatcher, 2026-11-20): the grade is checked against real runs, so the twin runs what the
+# real arm runs; as-found gives J2 about 1.3 Hz of bandwidth, which no real run uses.
+DEPLOYED_SCALES = {"j1": (14.0, 16.8), "j2": (2.5, 4.0), "c1": (2.5, 4.0), "w1": (4.0, 5.333333333333333),
+                   "w2": (4.0, 4.546666666666667), "w3": (4.0, 2.7066666666666666)}
+DEPLOYED_CAPS_NM = {"j2": 17.984, "c1": 17.984}
 
 
 def episode(spec, rung, seed=0):
@@ -77,10 +84,12 @@ def test_fivebar_boards_are_bam_pid_tunnings_drives():
     by_role = {d.role.lower(): d for d in DRIVES}
     for j, name in enumerate(FIVEBAR_JOINTS):
         drive = by_role[name]
-        kp, kd = drive.as_found_moteus[0], drive.as_found_moteus[1]
-        assert board.kp_nm_rad[j] == pytest.approx(kp), name
-        assert board.kd_nm_s_rad[j] == pytest.approx(kd), name
-        assert board.torque_cap_nm[j] == pytest.approx(drive.torque_limit_nm), name
+        # moteus gains are per output revolution; the board model's are per radian (bam_pid_tunning Gains.from_moteus)
+        kp, kd = drive.as_found_moteus[0] / (2 * math.pi), drive.as_found_moteus[1] / (2 * math.pi)
+        kp_scale, kd_scale = DEPLOYED_SCALES[name]
+        assert board.kp_nm_rad[j] == pytest.approx(kp * kp_scale), name
+        assert board.kd_nm_s_rad[j] == pytest.approx(kd * kd_scale), name
+        assert board.torque_cap_nm[j] == pytest.approx(DEPLOYED_CAPS_NM.get(name, drive.torque_limit_nm)), name
     assert board.encoder_counts_per_rev == int(DRIVES[0].truth.encoder_counts_per_rev)
 
 
@@ -144,9 +153,10 @@ def test_model_error_changes_the_model_and_never_the_plant(arm_name):
     qd, qdd = np.full(n, 0.5), np.full(n, 3.0)
     np.testing.assert_array_equal(exact(q, qd, qdd), nominal(q, qd, qdd))
     assert np.max(np.abs(wrong(q, qd, qdd) - exact(q, qd, qdd))) > 1e-4
-    _, a = episode(spec("none", "none", "board_gains", "board", arm=arm_name), hold_rung(arm_name, spec_arm.home_q, 0.5))
-    _, b = episode(spec("none", "none", "board_gains", "board", arm=arm_name), hold_rung(arm_name, spec_arm.home_q, 0.5))
-    assert a["tracking_max_deg"] == b["tracking_max_deg"]
+    # WHY the logged positions, not a metric: metrics sample at send times, which include measured CPU time
+    log_a, _ = episode(spec("none", "none", "board_gains", "board", arm=arm_name), hold_rung(arm_name, spec_arm.home_q, 0.5))
+    log_b, _ = episode(spec("none", "none", "board_gains", "board", arm=arm_name), hold_rung(arm_name, spec_arm.home_q, 0.5))
+    np.testing.assert_array_equal(log_a.q, log_b.q)
 
 
 @pytest.mark.parametrize("arm_name", ["bam_fivebar", "pendulum"])
