@@ -77,9 +77,11 @@ def run_episode(
     joint_count = len(joint_names)
     start_q = np.asarray(plant.start_q, dtype=float)
 
-    script = sorted(
-        ((float(t), message) for t, message in rung.inputs(start_q.copy())), key=lambda item: item[0]
-    )
+    inputs = rung.inputs
+    bind = getattr(inputs, "for_arm", None)
+    if callable(bind):  # a script that needs its arm (rungs.HoldScript) is bound to the rung's plant
+        inputs = bind(rung.plant)
+    script = sorted(((float(t), message) for t, message in inputs(start_q.copy())), key=lambda item: item[0])
     if not script or abs(script[0][0]) > SCRIPT_TOLERANCE_S:
         raise ValueError(f"rung {rung.id}: the input script must start with a message at t = 0")
     controller = spec.build(script[0][1], **_rate_overrides(spec, period))

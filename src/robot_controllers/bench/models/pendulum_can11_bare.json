@@ -1,0 +1,17 @@
+{
+  "file": "pendulum_can11_bare.xml",
+  "sha256": "ed7fdf67cb5c1459e2645a19568080a3a09d477a31fa0d4c57b326a92acc8318",
+  "what": "the 1-DOF pendulum (One Dof Test Rack CAN 11) as bam_rack_twin's bare hinge with an identified gravity: one body, one hinge about z, gravity along -y, the axis inertia split half to a point mass (that gives G sin(q - bottom)) and half to the armature",
+  "template": "bam_ws src/dev/bam_rack_twin/bam_rack_twin/twin.py:1061-1101 bare_hinge_xml (gravity_point_mass:870-886, _gravity_inertial:888-899, GRAVITY_BODY_INERTIA_FRACTION:168 = 0.5, GRAVITY_M_S2:147 = 9.81, HARD_FRICTION_SOLREF/_SOLIMP:137-138 = 2 x the step, d 0.99)",
+  "constants": {
+    "twin": "can11-r18a (the twin of record)",
+    "gravity_nm": 4.42266,
+    "gravity_bottom_rad": 0.257822,
+    "axis_inertia_kg_m2": 0.12011,
+    "frictionloss_nm": 1.12,
+    "damping_nm_s_rad": 0.0873596,
+    "torque_scale": 1.04,
+    "source": "arm_motion_bench src/arm_motion_bench/baselines/pendulum_sim.py:84-89 (TWIN_TORQUE_SCALE, TWIN_FF: can11-r18a's own terms); the twin-of-record JSON on /archive was deliberately not opened"
+  },
+  "differences_from_the_twin": "timestep 0.00025 s (the bench boards' 4 kHz; the twin runs 0.0002) and so solreffriction 0.0005; no LuGre pre-sliding, no Stribeck, no rotor ripple (not in the contract's truth); the torque scale 1.04 is applied by the plant (qfrc = 1.04 x the board's torque)"
+}

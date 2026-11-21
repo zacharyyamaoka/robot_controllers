@@ -1,0 +1,33 @@
+{
+  "what": "copies of arm_motion_bench's frozen workspace v2 tapes (robot_msgs save_npz JointTrajectory, 100 Hz, bam_ruckig), byte for byte; the sha256 of each equals its dataset manifest's 'files' entry",
+  "arm_motion_bench_head": "544c20a",
+  "copied": "2026-11-20",
+  "tapes": [
+    {
+      "file": "tapes/bam_fb/workspace-dev-000__s0.5.npz",
+      "robot": "bam_fb",
+      "task": "workspace-dev-000",
+      "speed_fraction": 0.5,
+      "sha256": "b743053d9d3351609d1298351da84fa85c77287aa314d54112d8c0e93db0eb94",
+      "source": "/home/bam/arm_motion_bench/outputs/datasets/bam_fb/workspace/v2/tapes/workspace-dev-000__s0.5.npz",
+      "manifest": "/home/bam/arm_motion_bench/datasets/bam_fb/workspace/v2/manifest.json",
+      "manifest_created": "2026-11-20T12:34:40-07:00",
+      "manifest_generator_git_sha": "d438b25cfa78e5565b5316023e112351490ed5ba",
+      "manifest_tasks_sha256": "6b34c27d74e3b76ee2762e3f1ed455e5b88b1d46d716b2e97eb5d875971f1cff",
+      "why": "the BAM FB workspace v2 dev000 path (ISO 9283 line + rectangle); the real showcase ran it at rung 0.5 (scripts/bam_fb_real_showcase.py); the targets' base path (path@nominal), time-scaled x2.0 / x0.9 for slow / fast by bench.targets"
+    },
+    {
+      "file": "tapes/pendulum/workspace-dev-007__s0.5.npz",
+      "robot": "pendulum",
+      "task": "workspace-dev-007",
+      "speed_fraction": 0.5,
+      "sha256": "8ccdd8c6b18178d8ffcd86d657113ee2d5d9e1fad42cad17f95d5585859786a2",
+      "source": "/home/bam/arm_motion_bench/outputs/datasets/pendulum/workspace/v2/tapes/workspace-dev-007__s0.5.npz",
+      "manifest": "/home/bam/arm_motion_bench/datasets/pendulum/workspace/v2/manifest.json",
+      "manifest_created": "2026-11-20T13:14:58-07:00",
+      "manifest_generator_git_sha": "8737e4432700e3e16ea0ad434da46295fce56605",
+      "manifest_tasks_sha256": "3ae4d3fd69dd297d21ba36a006c5ed184a49ba30cf2e7a3a5aa75fdcf235a428",
+      "why": "the pendulum v2 dev tour's task 007 (a 138 deg, 63 cm swing), which the real showcase played at 0.5 (scripts/pendulum_showcase.py SEGMENTS); the targets' base path (path@nominal), time-scaled x2.0 / x0.9 for slow / fast by bench.targets"
+    }
+  ]
+}

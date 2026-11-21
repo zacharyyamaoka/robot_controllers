@@ -1,0 +1,20 @@
+{
+  "file": "bam_fb_v2_bare.xml",
+  "sha256": "27294648de10b58688ba0a2799dae6f1e4d5769a081c05d0cabe60a5898b7196",
+  "what": "bam_pid_tunning's reduced bam_fb_v2 MJCF: the assembled full arm (five-bar + UR wrist + crab claw) with every geom, mesh, texture, material and contact pair removed; inertials, joints and the five-bar's one connect closure kept; a 'tool' site at the claw body's origin and a 'home' keyframe.",
+  "generated_by": "bam_pid_tunning.plants.bam_fb_v2.reduced_mjcf(out_dir) (bam_ws src/core/mdp/setup/bam_pid_tunning/src/bam_pid_tunning/plants/bam_fb_v2.py:194-213), run unchanged 2026-11-20 with the bundle below; output bytes copied as-is",
+  "bam_ws_head": "bb3ab4cec",
+  "bam_fb_v2_py_last_commit": "dbe34d0c0",
+  "description_id": "bam_fb_v2",
+  "bundle_commit": "09374d7",
+  "bundle_sha": "6dcec7b823c6b85b",
+  "source_scene": "~/.cache/cad2robot-build/bundles/09374d7/fixtures/cad2robot/bam_fb_v2/mjcf/scene.xml",
+  "source_scene_sha256": "ee65af5194a2e5f140e81495b39090703e53d30d9b53f1fe26f8db9b8aafcff1",
+  "applied_at_load_by_robot_controllers.bench.fivebar": [
+    "the claw hinge revolute_5 removed (the claw welded closed at 0, as bam_arm_fb_sim kin.py and arm_motion_bench robots/bam_fb.py hold it) and the 9-joint 'home' keyframe dropped with it",
+    "timestep 0.00025 s (the boards' 4 kHz)",
+    "the closure stiffened as ArmSim does (mujoco_arm.py:64-65: solref 0.002, solimp 0.9999 0.99999 0.001 0.5 2)",
+    "the drives' truth (bam_fb_v2.py DRIVES:97-139) on the plant: armature, Coulomb as frictionloss with solref 0.002 and 5 noslip iterations (mujoco_arm.py:57-60), viscous damping"
+  ],
+  "frames_checked": "the five-bar and wrist joint frames equal bam_arm_fb_sim's composed arm (the frame arm_motion_bench's bam_fb tapes are in): same joint zeros and axes; bam_fb_v2's base is the test-rig bundle's rotated (v2 = (-z, y, x)), with gravity along v2 -z = the rack's hang (bam_fb_test_rig model.py RACK_MOUNT:84-101)"
+}

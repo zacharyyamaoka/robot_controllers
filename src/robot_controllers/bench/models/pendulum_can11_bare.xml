@@ -1,0 +1,10 @@
+<mujoco model="can11_bare_hinge">
+  <option timestep="0.00025" gravity="0 -9.81 0"/>
+  <worldbody>
+    <body name="can11_link">
+      <inertial pos="-0.033965066957158924 -0.1288064373177445 0" mass="3.38438624180457" diaginertia="1e-09 1e-09 1e-09"/>
+      <joint name="can11" type="hinge" axis="0 0 1" armature="0.06005500000000001"
+             frictionloss="1.12" damping="0.0873596" solreffriction="0.0005 1.0" solimpfriction="0.99 0.99 0.001 0.5 2.0"/>
+    </body>
+  </worldbody>
+</mujoco>
