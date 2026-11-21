@@ -97,7 +97,7 @@ def test_the_population_is_the_contracts_sixteen_and_only_board_side_configs_go_
     assert tuple(POPULATION) == (
         "P1", "P2", "P2s", "P3", "P3s", "P4", "P4s", "P5", "P5s", "P6", "P6s", "P7", "P7s", "P8", "P9", "P10",
     )
-    assert tuple(REAL_SAFE) == ("P2", "P4", "P4s", "P5s")
+    assert tuple(REAL_SAFE) == ("P2", "P2s", "P3", "P3s", "P4", "P4s", "P5", "P5s", "P6", "P6s", "P7", "P7s")
     base = base_scenario("planar_arm")
     layouts = {c: config_spec(c, base).default_config["layout"] for c in POPULATION}
     assert layouts["P10"].feedback_at == "host" and layouts["P9"].feedback_at == "host"

@@ -789,8 +789,12 @@ cached per scenario). The population (each with `interpolation` ∈ {tangent, se
 | P9 | model at the host, measured state | computed torque on the host | none |
 | P10 | model at plan time | PD on the host | none |
 
-×2 interpolation for P2–P7 → 16 configs. The real arms run only P2, P4 (tangent and secant) and P5 (secant): never
-a host-side feedback law, which saturated the boards at 50 Hz in every sim.
+×2 interpolation for P2–P7 → 16 configs. ~~The real arms run only P2, P4 (tangent and secant) and P5 (secant)~~
+**Amended after the grade (2026-11-20):** the real arms run every config whose feedback the board closes and that has a
+feed-forward: P2–P7 in both interpolations (`REAL_SAFE`). Never P1 (no feed-forward: the arm sags), P8, P9 or P10 (feedback
+on the host, which saturated the boards at 50 Hz in every sim). WHY widened: the first list was a guess; the grade's best
+accuracy on three arms was P7 / P7s (gains re-sent each tick, still closed by the board; moteus takes kp/kd scales with
+every command) and on the pendulum P3s, neither of which the guess allowed.
 
 ### 5.6 The metrics and objectives
 
