@@ -7,6 +7,11 @@
     robot-controllers study [--arm planar_arm|ur5e ...] [--dimension rate|speed|... ...] [--workers N]
     robot-controllers calibrate [--arm planar_arm] [--target calibration] [--rate 100] [--method xcorr|sweep]
                                 [--bus-ms 2 8] [--jitter-ms 0] [--nominal-ms 5.5] [--tolerance-ms 2] [--json]
+    robot-controllers grade [--arm A ...] [--config P4s ...] [--workers 2] [--fresh] [--no-wait] [--requests]
+    robot-controllers recommend --arm bam_fivebar --rate 50 [--ff rigid_body] [--ff-error 0.1]
+                                [--objective accuracy|impact|collision_detection|cost] [--bus datasheet|rig|ideal]
+                                [--bus-ms 1.25 2.5 ...] [--jitter-ms 0] [--gains 1] [--speed nominal] [--joints N]
+                                [--no-board-pd] [--no-per-tick-gains] [--no-ff-field] [--max-rate 1000] [--json]
 """
 
 from __future__ import annotations
@@ -68,6 +73,38 @@ def main(argv: list[str] | None = None) -> int:
     calibrate.add_argument("--seed", type=int, default=0)
     calibrate.add_argument("--json", action="store_true", help="print the Calibration as JSON")
 
+    grade = sub.add_parser(
+        "grade", help="grade the population on every scenario of every arm -> results/grade/results.json"
+    )
+    grade.add_argument("--arm", action="append", help="a registered arm (default: every one)")
+    grade.add_argument("--config", action="append", help="a population config (default: all sixteen)")
+    grade.add_argument("--workers", type=int, default=2, help="processes (at most 2 on the rig's PC)")
+    grade.add_argument("--fresh", action="store_true", help="ignore rows already in results/grade/partial.jsonl")
+    grade.add_argument("--no-wait", action="store_true",
+                       help="stop instead of waiting when the real arm is powered (rerun resumes)")
+    grade.add_argument("--requests", action="store_true",
+                       help="also write the real stations' run requests (results/grade/requests/)")
+
+    rec = sub.add_parser("recommend", help="the best controller for your setup, from the graded ledger")
+    rec.add_argument("--arm", required=True, help="the arm (one the ledger has not graded needs --joints)")
+    rec.add_argument("--rate", type=float, required=True, help="host rate, Hz")
+    rec.add_argument("--ff", default="rigid_body",
+                     help="the feed-forward you have: none, trajectory, gravity, rigid_body, rigid_body_coulomb")
+    rec.add_argument("--ff-error", type=float, default=0.1, help="how wrong your model is (0.1 = 10 %%)")
+    rec.add_argument("--objective", default="accuracy", help="accuracy, impact, collision_detection or cost")
+    rec.add_argument("--bus", choices=("datasheet", "rig", "ideal"), default="datasheet",
+                     help="datasheet (fdcanusb, joint order; default), rig (seven boards in ~15.5 ms) or ideal 5.5 ms")
+    rec.add_argument("--bus-ms", type=float, nargs="+", help="your command delay, one value or one per joint")
+    rec.add_argument("--jitter-ms", type=float, default=0.0)
+    rec.add_argument("--gains", type=float, default=1.0, help="your board gains relative to the arm's nominal")
+    rec.add_argument("--speed", default="nominal", choices=("slow", "nominal", "fast"))
+    rec.add_argument("--joints", type=int, help="joint count (an arm the ledger has not seen)")
+    rec.add_argument("--no-board-pd", action="store_true", help="the driver cannot close a PD itself")
+    rec.add_argument("--no-per-tick-gains", action="store_true", help="the driver takes no new gains per command")
+    rec.add_argument("--no-ff-field", action="store_true", help="the driver takes no feed-forward torque")
+    rec.add_argument("--max-rate", type=float, default=1000.0, help="the fastest the driver may be commanded, Hz")
+    rec.add_argument("--json", action="store_true")
+
     args, rest = parser.parse_known_args(argv)
     if args.command == "wandb":
         from robot_controllers.tracking.wandb_log import main as wandb_main
@@ -77,6 +114,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"unrecognized arguments: {' '.join(rest)}")
     if args.command == "calibrate":
         return _calibrate(args)
+    if args.command == "grade":
+        return _grade(args)
+    if args.command == "recommend":
+        return _recommend(args)
     if args.command == "study":
         from robot_controllers.bench import study as study_module
 
@@ -184,6 +225,97 @@ def _calibrate(args: argparse.Namespace) -> int:
     for lookahead, p95 in result.curve:
         print(f"  sweep: lookahead {1e3 * lookahead:5.2f} ms -> tracking p95 {p95:.4g} deg")
     print(("WITHIN: " if result.within else "OUTSIDE: ") + result.why)
+    return 0
+
+
+def _grade(args: argparse.Namespace) -> int:
+    """`robot-controllers grade`: the population on every scenario (CONTRACT §5.7), resumable, arm-powered aware."""
+    from robot_controllers import grade
+    from robot_controllers.bench.population import POPULATION
+
+    document = grade.run_grade(
+        args.arm or None,
+        workers=args.workers,
+        configs=tuple(args.config) if args.config else POPULATION,
+        resume=not args.fresh,
+        wait_for_arm=not args.no_wait,
+    )
+    path = grade.write_grade(document)
+    generated = document["generated"]
+    print(f"wrote {path}: {generated['rows']} rows, {generated['episodes']} episodes in {generated['wall_s']} s"
+          + ("" if generated["complete"] else " (INCOMPLETE: rerun to resume)"))
+    for arm_name, summary in document["summary"].items():
+        for objective, entry in summary["headline"].items():
+            if entry:
+                print(f"  {arm_name} {objective}: {entry['config']} ({entry['metric']} {entry['value']:.4g}; "
+                      f"within 10 %: {', '.join(entry['within_10pct'])}) on {entry['scenario']}")
+    if args.requests:
+        from robot_controllers.real.requests import write_requests
+
+        for request in write_requests(ledger=document):
+            print(f"  wrote {request}")
+    return 0 if generated["complete"] else 3
+
+
+def _recommend(args: argparse.Namespace) -> int:
+    """`robot-controllers recommend`: look the best config up for a setup (CONTRACT §5.7)."""
+    import json
+
+    from robot_controllers.bench.scenarios import IDEAL_DELAY_S, RIG_DEVICES, RIG_EXCHANGE_S, RIG_SOURCE
+    from robot_controllers.models import DriverCaps
+    from robot_controllers.recommend import Setup, recommend
+    from robot_controllers.timing import BusTiming
+
+    count = args.joints
+    if count is None:
+        try:
+            from robot_controllers.bench.arms import arm
+
+            count = len(arm(args.arm).joint_names)
+        except KeyError:
+            print(f"{args.arm!r} is not a registered arm: pass --joints", file=sys.stderr)
+            return 2
+    if args.bus_ms:
+        values = tuple(v / 1e3 for v in args.bus_ms)
+        bus = BusTiming(values[0] if len(values) == 1 else values, source="assumed:--bus-ms")
+    elif args.bus == "rig":
+        bus = BusTiming.from_datasheet(RIG_EXCHANGE_S, RIG_DEVICES, slot_order=tuple(range(count)), source=RIG_SOURCE)
+    elif args.bus == "ideal":
+        bus = BusTiming(IDEAL_DELAY_S, source="twin:ideal")
+    else:
+        from robot_controllers.calibration import datasheet_bus
+
+        bus = datasheet_bus(count)
+    if args.jitter_ms:
+        import dataclasses
+
+        bus = dataclasses.replace(bus, jitter_s=args.jitter_ms / 1e3)
+    caps = DriverCaps(board_pd=not args.no_board_pd, per_tick_gains=not args.no_per_tick_gains,
+                      feedforward_field=not args.no_ff_field, max_rate_hz=args.max_rate)
+    setup = Setup(args.arm, args.rate, bus, args.ff, args.ff_error, caps, args.gains, args.speed, args.joints)
+    answer = recommend(setup, objective=args.objective)
+    if args.json:
+        print(json.dumps({
+            "config": answer.config,
+            "controller": None if answer.controller is None else answer.controller.name,
+            "runner_up": answer.runner_up,
+            "scenario": answer.scenario,
+            "arm": answer.arm,
+            "why": answer.why,
+            "expected": answer.expected,
+            "evidence": answer.evidence,
+        }, indent=1))
+        return 0
+    if answer.controller is None:
+        print(f"no recommendation: {answer.why}")
+        return 1
+    print(f"{answer.config}: {answer.controller.name}")
+    print(f"  {answer.why}")
+    for name in ("tool_p95_mm", "tracking_p95_deg", "collision_detect_ms", "collision_peak_nm", "collision_margin",
+                 "host_duty_pct", "wire_bytes_per_s"):
+        value = answer.expected.get(name)
+        if value is not None:
+            print(f"  expected {name}: {value:.4g}")
     return 0
 
 
