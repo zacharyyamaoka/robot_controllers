@@ -18,7 +18,7 @@ from typing import Any
 import numpy as np
 
 from robot_controllers.bench.types import EpisodeLog, GateResult, Rung, RunResult, gate_rows, judge
-from robot_controllers.metrics import contact, cost, decomposition, health, sequence, timing, tracking
+from robot_controllers.metrics import contact, cost, decomposition, health, lag, sequence, timing, tracking
 from robot_controllers.metrics.names import BY_NAME, METRICS
 
 Metrics = dict[str, float | int | None]
@@ -81,6 +81,28 @@ def episode_metrics_and_notes(log: EpisodeLog, rung: Rung) -> tuple[Metrics, dic
         note("settle_time_s", settle_note)
     if log.ref_tool_pos is not None:
         metrics.update(tracking.tool_tracking_metrics(log.sent_t, log.ref_tool_pos, log.t, log.tool_pos))
+
+    # lag and sync (amendment 4, §4.3)
+    lag_s = lag.estimate_lag_s(log) if log.ref_position is not None else None
+    metrics["tracking_lag_ms"] = None if lag_s is None else 1000.0 * lag_s
+    if lag_s is None:
+        note("tracking_lag_ms", "not measured: no reference, or no joint's reference moves 0.1 deg")
+    params = rung.params
+    if all(name in params for name in lag.SYNC_PARAMS) and log.ref_tool_pos is not None:
+        metrics.update(
+            lag.sync_metrics(
+                log.t,
+                log.tool_pos,
+                log.sent_t,
+                log.ref_tool_pos,
+                float(params["sync_start_s"]),
+                float(params["sync_end_s"]),
+                float(params["belt_speed_m_s"]),
+            )
+        )
+    else:
+        for name in ("sync_error_p95_mm", "sync_timing_ms"):
+            note(name, "not measured: not a sync rung (no sync window and belt speed in its params)")
 
     # replanning: command smoothness is measured on every rung; replans only where the script has them
     metrics["command_jump_max_deg"] = tracking.command_jump_max_deg(log.cmd_position)

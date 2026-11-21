@@ -48,6 +48,16 @@ METRICS: tuple[MetricInfo, ...] = (
     _m("tool_p95_mm", "mm", "tracking", "lower", "95th percentile tool position error."),
     _m("final_error_deg", "deg", "tracking", "lower", "|joint error| at the end of the run, worst joint."),
     _m("settle_time_s", "s", "tracking", "lower", "Time after the reference ends until every joint stays within 0.5 deg."),
+    # amendment 4 (§4.3): how far behind the reference the arm runs, and a tool riding a point on the belt
+    _m("tracking_lag_ms", "ms", "tracking", "none",
+       "1000 x the shift that best lines the measured joints up with the reference (whole arm, signed: "
+       "+ = the arm lags; metrics.lag.estimate_lag_s). None when no joint's reference moves 0.1 deg."),
+    _m("sync_error_p95_mm", "mm", "tracking", "lower",
+       "95th percentile of the tool's distance from the target point over the rung's sync window "
+       "(sync rungs only)."),
+    _m("sync_timing_ms", "ms", "tracking", "none",
+       "1000 x mean over the sync window of (target x - tool x) / belt speed: signed, + = behind the item "
+       "(sync rungs only)."),
     # contact (belt rungs; ISO/TS 15066's two phases)
     _m("touch_speed_m_s", "m/s", "contact", "none", "Tool speed normal to the belt at first contact (context, not a score)."),
     _m("contact_peak_n", "N", "contact", "lower", "Transient peak: largest normal force in the 30 ms after first touch."),
