@@ -314,13 +314,13 @@ def references_html(refs: Mapping[str, Any]) -> str:
     return f"<div class='refs'>{''.join(out)}</div><p class='muted'>Links checked on {esc(refs['verified'])}.</p>"
 
 
-DIAGRAM = """<svg viewBox="0 0 860 210" role="img" aria-label="Where each part of a controller can run">
+DIAGRAM = """<svg viewBox="0 0 880 210" role="img" aria-label="Where each part of a controller can run">
 <style>.b{fill:var(--card);stroke:var(--line);stroke-width:1.5}.t{fill:var(--fg);font:600 14px system-ui}.s{fill:var(--muted);font:12px system-ui}.a{stroke:var(--muted);stroke-width:1.5;marker-end:url(#h)}.k{fill:var(--accent)}</style>
 <defs><marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="var(--muted)"/></marker></defs>
 <rect class="b" x="10" y="30" width="150" height="110" rx="10"/><text class="t" x="24" y="56">Plan time</text><text class="s" x="24" y="78">trajectory</text><text class="s" x="24" y="96">feed-forward model</text><text class="s" x="24" y="114">(once per sample)</text>
 <rect class="b" x="215" y="30" width="170" height="110" rx="10"/><text class="t" x="229" y="56">Host loop</text><text class="s" x="229" y="78">25–200 Hz</text><text class="s" x="229" y="96">sample ahead (lookahead)</text><text class="s" x="229" y="114">FF or FB live, if placed here</text>
 <rect class="b" x="440" y="30" width="150" height="110" rx="10"/><text class="t" x="454" y="56">Bus</text><text class="s" x="454" y="78">CAN-FD, boards in turn</text><text class="s" x="454" y="96">datasheet vs measured</text><text class="s" x="454" y="114">delay per joint</text>
-<rect class="b" x="645" y="30" width="200" height="110" rx="10"/><text class="t" x="659" y="56">Driver (board)</text><text class="s" x="659" y="78">PD at kHz, 0.5 ms delay</text><text class="s" x="659" y="96">walks the setpoint at the</text><text class="s" x="659" y="114">sent velocity between commands</text>
+<rect class="b" x="645" y="30" width="226" height="110" rx="10"/><text class="t" x="659" y="56">Driver (board)</text><text class="s" x="659" y="78">PD at kHz, 0.5 ms delay</text><text class="s" x="659" y="96">walks the setpoint at the</text><text class="s" x="659" y="114">sent velocity between commands</text>
 <line class="a" x1="160" y1="85" x2="213" y2="85"/><line class="a" x1="385" y1="85" x2="438" y2="85"/><line class="a" x1="590" y1="85" x2="643" y2="85"/>
 <text class="s" x="10" y="180">A controller = a trajectory + a feed-forward model + a feedback model + a layout: where each runs, how often, and how far ahead.</text>
 <text class="s" x="10" y="200">The grade varies the layout (the population) against the conditions it will meet (the scenarios).</text></svg>"""
