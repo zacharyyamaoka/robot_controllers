@@ -274,3 +274,77 @@ class Layout:
                 f"feedback_at={self.feedback_at!r} needs a feedback the board can close (with gains(q_ref)); "
                 f"{feedback!r} has none, so it can only run on the host"
             )
+
+
+# ── what the controller is given, and what the driver can do (CONTRACT amendment 5, §5.3) ──────────────────
+
+
+@dataclass(frozen=True)
+class ModelError:
+    """How wrong the models handed to a controller are, relative to the plant's truth (the plant never changes).
+
+    Each link's mass and inertia in the model are multiplied by `1 + scale · s_i`, `s_i ∈ {−1, +1}` drawn once per link
+    from `seed` (a fixed pattern, so a scenario replays); friction terms by `1 + friction_scale` (default: `scale`).
+    `ModelError()` (scale 0) is the nominal model exactly.
+
+    Zach, 2026-11-20: "How good or bad is the feedforward/feedback we are given".
+    """
+
+    scale: float = 0.0
+    seed: int = 0
+    friction_scale: float | None = None
+
+    def __post_init__(self) -> None:
+        if not (math.isfinite(self.scale) and 0.0 <= self.scale < 1.0):
+            raise ValueError(f"ModelError.scale must be in [0, 1), got {self.scale!r}")
+        if self.friction_scale is not None and not (
+            math.isfinite(self.friction_scale) and -1.0 < self.friction_scale
+        ):
+            raise ValueError(f"ModelError.friction_scale must be > -1, got {self.friction_scale!r}")
+
+    @property
+    def is_nominal(self) -> bool:
+        return self.scale == 0.0 and not self.friction_scale
+
+    def link_factors(self, count: int) -> np.ndarray:
+        """(count,) multipliers for each link's mass and inertia, in the model's body order."""
+        if self.scale == 0.0:
+            return np.ones(count)
+        signs = np.random.default_rng(self.seed).choice((-1.0, 1.0), size=count)
+        return 1.0 + self.scale * signs
+
+    @property
+    def friction_factor(self) -> float:
+        return 1.0 + (self.scale if self.friction_scale is None else self.friction_scale)
+
+    @property
+    def label(self) -> str:
+        """`ff±10%` (and `fric+20%` when friction is off its own way); `ff exact` for the nominal model."""
+        if self.is_nominal:
+            return "ff exact"
+        text = f"ff±{100 * self.scale:g}%"
+        if self.friction_scale is not None and self.friction_scale != self.scale:
+            text += f"·fric{100 * self.friction_scale:+g}%"
+        return text
+
+
+@dataclass(frozen=True)
+class DriverCaps:
+    """What a servo driver can run (CONTRACT §5.3); a config these caps cannot run is never recommended for them."""
+
+    board_pd: bool = True  # closes kp·(q_ref − q) + kd·(qd_ref − qd) itself
+    per_tick_gains: bool = True  # takes new kp, kd with every command (board_scheduled)
+    feedforward_field: bool = True  # adds a torque the host sends (every model-FF placement)
+    max_rate_hz: float = 1000.0  # the fastest the host may command it
+
+    def can_run(self, layout: Layout) -> bool:
+        if layout.feedback_at in ("board", "board_scheduled", "split") and not self.board_pd:
+            return False
+        if layout.feedback_at == "board_scheduled" and not self.per_tick_gains:
+            return False
+        if layout.feedback_at in ("host", "split") and not self.feedforward_field:
+            return False  # host feedback rides in the feed-forward field
+        return not (layout.feedforward_at not in ("none",) and not self.feedforward_field)
+
+
+MOTEUS = DriverCaps()  # mjbots moteus in position mode: all of it (kp_scale / kd_scale per command, feedforward_torque)

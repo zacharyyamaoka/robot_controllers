@@ -654,3 +654,220 @@ The builder writes:
 
 **`tests/test_study_acceptance.py` is the dispatcher's**, written before the build and read-only to the builder, as is
 `tests/test_layout_acceptance.py`.
+
+## Amendment 5 (2026-11-20 night: bus timing, calibration and drift, the grader and `recommend()`, more arms; a barrier, applied in the order below)
+
+Zach, 2026-11-20:
+> "this controller then should register a routine to calibrate the delay … our representation of the CANFD should have a
+> data sheet nominal value for the delay and stuff. and then we can compare that against reality and of course if that
+> begins to change a lot we should be alerted … we start with like feedback given and feedforward given. And we're
+> interested in basically like the layout … vary … How good or bad is the feedforward/feedback we are given, Host Rate,
+> Speed of trajectories, Whether its running on host/driver, whether its on plan or live … track performance metrics like
+> accuracy, impact … fixed target trajectories … a bunch of different controller/driver configurations (that's the
+> population) and we basically want to grade them on all of these scenarios … once you tell me what driver you're using,
+> and the state of your FF/FB and the host rate … communication rate, I can tell you exactly what the best controller
+> is … perhaps if you want to really optimize for less impact, or better collision detection."
+
+After this amendment the controller question is answered by a lookup, not by a new controller: `recommend(setup,
+objective)` over a graded ledger.
+
+### 5.1 The arm registry (`bench/arms.py`, committed by the dispatcher with this amendment)
+
+One `ArmSpec` per arm (`bench/arms.py`: `ArmSpec`, `register`, `arm(name)`, `arms()`, `ARM_MODULES`), so every later
+section is arm-agnostic. Each arm's module builds its spec and calls `register` at import; `ARM_MODULES` lists them in
+display order. The planar arm registers from a new `bench/arm_planar.py` (wrapping `arm.py` / `arm_models.py`), the UR5e
+from `bench/ur5e.py`. `layout_spec(..., arm=)`, `run_episode`'s plant choice (`Rung.plant`) and the study read the
+registry. Planar and UR5e move onto it with no behaviour change: both acceptance files and both ledgers still reproduce.
+`ArmSpec.feedforward(name, model_error)` and `ArmSpec.mass_matrix(model_error)` take a `ModelError` (§5.3); `None` and
+`ModelError()` are the nominal model exactly.
+
+### 5.2 Bus timing: nominal, calibrated, monitored (`timing.py`, `metrics/lag.py`, `monitor.py`)
+
+- **`BusTiming`** (`timing.py`, committed with this amendment): `command_delay_s` (one value or one per joint),
+  `reply_delay_s`, `jitter_s`, `source`. `BusTiming.from_datasheet(exchange_time_s, devices, *, slot_order,
+  command_latency_s, reply_delay_s, source)`: joint j's command lands `command_latency_s + exchange_time_s · (slot_j + 1) /
+  devices` after the exchange starts. Plain numbers in: robot_controllers never imports robotparts; the caller passes
+  robotparts' datasheet values (the accessor goes in the docstring once the robotparts lane lands it).
+  `BusTiming.from_calibration(lags_s, source=)`. Lane A adds `HostTiming.from_bus(bus, rate_hz)` and
+  `lookahead_from(bus, count) -> tuple[float, ...]`.
+- **The calibration routine** (`calibration.py`: `calibrate_bus(spec_at, rung, *, nominal: BusTiming, method="xcorr",
+  lookaheads_s=None, tolerance_s=0.002, seed=0) -> Calibration`):
+  - `method="xcorr"`: one run at zero lookahead, `estimate_lag_s(per_joint=True)` → the measured per-joint delay.
+    Needs the log's send times to be the real send times (the twin's are; the real arm's logger today stamps the
+    exchange's *end*, so on real logs this bounds the delay only to one exchange, about 17 ms: §5.9);
+  - `method="sweep"`: one run per scalar lookahead in `lookaheads_s` (default: the nominal's mean + {−3, −1.5, 0, +1.5,
+    +3} ms); measured = the lookahead with the lowest `tracking_p95_deg` (scalar, applied to every joint). Works on any
+    log the bench can score, real ones included;
+  - returns `Calibration(measured: BusTiming, nominal: BusTiming, delta_s: tuple, within: bool, method, why: str)`,
+    `within` = every |delta| ≤ `tolerance_s`.
+  WHY a routine and not only live: a clean run gives the delay at once; the monitor then only has to notice a change.
+- **The live monitor** (`monitor.py`: `LagMonitor(expected: BusTiming, *, lookahead_s=0.0, window_s=2.0, step_s=0.5,
+  alert_s=0.002, confirm=2)`): pure and streaming. `update(t, q, sent_t, ref_position) -> list[LagEvent]` takes the new
+  plant samples (t, q) and the new host ticks (sent_t, ref_position) since the last call. Every `step_s` it estimates each
+  moving joint's lag over the last `window_s`; the measured *delay* is that lag plus the joint's lookahead in use. It emits
+  `LagEvent(t, joint, expected_s, measured_s, kind="drift"|"recovered")` when |measured − expected| > `alert_s` for
+  `confirm` windows in a row (and "recovered" when it comes back). A joint that did not move in the window (< 0.1° peak
+  to peak) is skipped, never alerted on. The monitor never changes the controller: it reports. (Re-calibrating
+  automatically is a later decision; an alert is what Zach asked for.)
+- **A changing bus in the twin:** `HostTiming.command_delay_steps: tuple[(t_s, delay_s | tuple), ...]` (default ()):
+  from each t on, commands sent use that delay. Defaults reproduce today.
+
+### 5.3 What the controller is given, and how good it is (`models.py`, committed with this amendment)
+
+- **`ModelError(scale, seed, friction_scale)`**: each link's mass and inertia in the *model* × `link_factors(count)` (1 ±
+  scale, a fixed sign pattern from `seed`), friction × `friction_factor`. On a MuJoCo arm the links are the bodies that
+  carry a joint, in model order (`body_mass`, `body_inertia`), friction is `dof_frictionloss` and `dof_damping`, and the
+  rotor `armature` stays as it is (it's the drive's, not the link's). The planar arm's links are link 1 and link 2 (the
+  tool's mass rides with link 2). The plant (the truth) never changes: only what
+  the controller is told. Every arm applies it to its own model (closed form or a private MuJoCo copy), links in its body
+  order.
+- **Feedback quality:** `gain_scale` multiplies the arm's board kp and kd (`scaled_board(board, gain_scale)`, lane A).
+- **`DriverCaps`** (`board_pd`, `per_tick_gains`, `feedforward_field`, `max_rate_hz`; `can_run(layout)`), `MOTEUS` =
+  all of it.
+
+### 5.4 Fixed targets and scenarios (`bench/targets.py`, `bench/scenarios.py`)
+
+- **`Target`** (`bench/targets.py`): `id` (`<arm>/path@slow|nominal|fast`, `<arm>/calibration`, `<arm>/collision`),
+  `arm`, `kind` ∈ {path, calibration, collision}, `speed`, `rung() -> Rung` (its plant, its script, gates and duration;
+  100 Hz host by default) and `params` (peak joint and tool speed). The three path targets are one frozen path time-scaled.
+  `calibration` moves every joint at least 5° (a smooth multi-joint sine sweep). `collision` is the nominal path with a
+  hard stop (a joint range limit) on its most-moving joint, half way along that joint's travel. Lane A gives planar and
+  UR5e their targets (R2's path and U2's path at three speeds); lane B1 gives its two arms theirs.
+- **`Scenario`** (`bench/scenarios.py`, frozen): `arm`, `target` (a target id), `host_rate_hz`, `bus: BusTiming`,
+  `model_error: ModelError`, `gain_scale`, `axis` (which grid axis it belongs to, "base" for the base) and `rung() ->
+  Rung`. Its `id` is readable, e.g. `bam_fivebar/path@nominal·50Hz·bus=stagger±1ms·ff±10%·gains×1`.
+  `base_scenario(arm)` and `grid(arm) -> tuple[Scenario, ...]` (the base first).
+- **The base scenario per arm** (`axis="base"`): `path@nominal`, 50 Hz (the rig), the datasheet bus, `ModelError(0.1)`,
+  gains ×1. The datasheet bus is `BusTiming.from_datasheet(per_device_s × devices, devices, slot_order=joint order,
+  source="datasheet:…")` with devices = the arm's joint count and `per_device_s` the fdcanusb's datasheet exchange time
+  per device from robotparts (the robotparts lane names the accessor; the source string names its part id and release).
+  Until robotparts carries a sourced number, `per_device_s` = 1.25 ms (mjbots: fdcanusb about 800 exchanges/s with one
+  moteus) with `source="datasheet:mjbots (fdcanusb ~800 Hz, one device)"`.
+- **The grid** (`axis` names in brackets; one axis at a time around the base, plus one 2-D grid):
+  - [speed] slow, fast;
+  - [rate] 25, 100, 200 Hz;
+  - [model_error] 0, 30 %;
+  - [gains] ×0.5, ×2;
+  - [bus] ideal (5.5 ms every joint), the rig as measured (2.2 ms per board in turn: seven boards in ~15.5 ms), the rig
+    + ±1 ms jitter;
+  - [event] `collision`; and, planar only, the belt contact R3 at 0.10 m/s;
+  - [rate_error] the 2-D grid host rate {25, 50, 100, 200} × model error {0, 10, 30 %} at nominal speed (what
+    `recommend` interpolates over).
+
+### 5.5 The population (`bench/population.py`)
+
+`POPULATION`: the 16 config ids in the table's order (`P1`, `P2`, `P2s`, `P3`, `P3s`, …, `P7s`, `P8`, `P9`, `P10`; the `s`
+suffix = `secant_mid_ff`), `REAL_SAFE = ("P2", "P4", "P4s", "P5s")`, and `config_spec(config_id, scenario, calibration=None)
+-> ControllerSpec`, which builds the `layout_spec` on the scenario's arm with that scenario's model error and gains.
+Every config is a `layout_spec` with one more knob, `lookahead_mode` ∈ {"none", "nominal", "calibrated"} (nominal =
+the scenario's datasheet `BusTiming`; calibrated = `calibrate_bus` on that scenario's arm, bus and rate, run once and
+cached per scenario). The population (each with `interpolation` ∈ {tangent, secant_mid_ff} where it applies):
+
+| # | feed-forward | feedback | lookahead |
+|---|---|---|---|
+| P1 | none | board PD | calibrated |
+| P2 | the trajectory's column (as built) | board PD | none |
+| P3 | model at plan time | board PD | nominal |
+| P4 | model at plan time | board PD | calibrated |
+| P5 | model + Coulomb at plan time | board PD | calibrated |
+| P6 | model at the host, measured state | board PD | calibrated |
+| P7 | model at plan time | computed-torque gains re-sent each tick | calibrated |
+| P8 | model at plan time | host spring + board damper | none |
+| P9 | model at the host, measured state | computed torque on the host | none |
+| P10 | model at plan time | PD on the host | none |
+
+×2 interpolation for P2–P7 → 16 configs. The real arms run only P2, P4 (tangent and secant) and P5 (secant): never
+a host-side feedback law, which saturated the boards at 50 Hz in every sim.
+
+### 5.6 The metrics and objectives
+
+- Existing: `tracking_p95_deg`, `tool_p95_mm`, `saturation_share`, `fb_share_lf_pct`, `host_duty_pct`,
+  `wire_bytes_per_s`, `contact_peak_n` (planar belt), `tracking_lag_ms`.
+- **Collision** (on the collision target only; units: ms, N·m, and "" for the margin): the residual is the feedback torque (board PD term + host feedback) per
+  joint over its cap, low-passed at 50 Hz, max over joints. The threshold is 1.25 × the same config's max residual on the
+  same scenario *without* the stop.
+  - `collision_detect_ms`: first contact → first threshold crossing (None = never: a fail);
+  - `collision_peak_nm`: the stop's largest constraint torque before detection (the impact);
+  - `collision_margin`: max residual during contact / threshold (higher = easier to tell apart).
+  WHY the controller's own nominal run sets the threshold: a better model leaves less residual in free motion, so the
+  same stop stands out sooner; that's the link between feed-forward quality and collision detection.
+- **Objectives** (`OBJECTIVES`): `accuracy` (tool_p95_mm, then tracking_p95_deg), `impact` (collision_peak_nm, planar
+  also contact_peak_n), `collision_detection` (collision_detect_ms, then collision_margin), `cost` (host_duty_pct, then
+  wire_bytes_per_s), or a dict of weights over normalised ranks. Gates as today (a config that fails a gate in a
+  scenario can't be recommended for it).
+
+### 5.7 The grader and `recommend()` (`grade.py`, CLI `robot-controllers grade` / `robot-controllers recommend`)
+
+- `grade.run_grade(arms=None, *, workers=2)` → `results/grade/results.json` (schema `robot-controllers/grade-1`): `rows`
+  (arm, scenario id, axis and fields, config id, metrics, passed, failed gates, the calibration used, `source`:
+  "sim" | "real") and `summary[arm]`: the best config per (scenario, objective) and a per-config grade card (how often it
+  is best or within 10 %).
+- `grade.run_scenario(config_id, scenario) -> dict`: one ledger row (the grader's unit; calibrates first when the config
+  needs it, caching per (arm, bus, rate)).
+- **`recommend.recommend(setup: Setup, objective="accuracy") -> Recommendation`**:
+  - `Setup(arm, host_rate_hz, bus: BusTiming, feedforward: str, model_error: float, driver_caps=MOTEUS, gain_scale=1.0,
+    speed="nominal", joint_count=None)` (`joint_count` lets an arm the ledger has never seen be matched);
+  - returns `Recommendation(controller: ControllerSpec | None, config: str | None, expected: dict, runner_up, why: str,
+    evidence: list)`: the nearest graded scenario on (arm, rate, error, speed, bus), the best passing config the caps
+    allow, its metrics there, and one plain-English reason; `controller=None` with the reason when no config fits;
+  - an arm not in the ledger → the nearest arm by joint count, and `why` says "nearest".
+- CLI: `robot-controllers recommend --arm bam_fivebar --rate 50 --ff-error 0.1 --objective accuracy` prints the answer.
+
+### 5.8 Two more arms: BAM's five-bar and the 1-DOF pendulum (lane B1; additive files only)
+
+Vendored the way the UR5e was: a bare MJCF, the identified constants, a plant on the same board model, the models.
+Sources (read them; copy constants, cite file:line in WHY comments):
+
+- **`bam_fivebar`** (`bench/fivebar.py`, `bench/models/bam_fb_v2_bare.xml`): joints `j1 j2 c1 w1 w2 w3` (CAN 11–16).
+  - The model: bam_pid_tunning's `plants/bam_fb_v2.py` `reduced_mjcf()` output (bundle 09374d7, geoms removed), the
+    five-bar closed by its one `connect` equality (passive `revolute_8` / `revolute_34`), stiffened as `ArmSim` does
+    (`plants/mujoco_arm.py`: solref 0.002). The plant commands and logs the six actuated joints only.
+  - Truth per drive (`bam_fb_v2.py` DRIVES, lines ~97–129): armature, Coulomb, caps (12.5 N·m five-bar, 1.02 wrist),
+    as-found board gains (kp 200/144/200, kd 4/8/4; wrist kp 75, kd 0.75; ki is not modelled), encoder 163840
+    counts/rev, gear 10. The twin's bus: 5.5 ms down, 1.5 ms up (`bam_fivebar/plant.py` RACK_BOARD) as the twin
+    nominal; the datasheet stagger for the real bus comes from §5.2.
+  - Feed-forward: closed-chain inverse dynamics on the actuated joints (τ_act from MuJoCo's `mj_inverse` on the full
+    coordinates with the closure solved for the passive joints, as `bam_arm_fb_sim/kin.py` does; least squares over τ
+    and λ as `ArmSim` does for gravity). `gravity`, `rigid_body`, `rigid_body_coulomb`; `ModelError` on the private copy.
+- **`pendulum`** (`bench/pendulum.py`, its MJCF from `bam_rack_twin/twin.py` `bare_hinge_xml`): one joint `can11`,
+  board frame, the twin's truth (`arm_motion_bench/baselines/pendulum_sim.py` ~84–89: G 4.42266, bottom 0.2578, J 0.12011,
+  Coulomb 1.12, viscous 0.0874, torque scale 1.04), cap 12.6 N·m, board kp 400 / kd 8 (deployment record), encoder 14-bit
+  through 10:1. Feed-forward: `pendulum_ff.FF_MODEL` (G 4.113, bottom 0.253, J 0.1057, Coulomb 0.612·tanh(qd/0.05),
+  viscous 0.0814) as `rigid_body_coulomb`; `rigid_body` without the Coulomb term; `gravity` the G term alone.
+- **Targets** for both are copies of arm_motion_bench's frozen tapes (the BAM FB workspace v2 `dev000` path; the pendulum
+  v2 task the real showcase ran), resampled onto the bench's grid, so a real log of the same tape compares one to one.
+- Both register through `ARM_MODULES` (lane B1 adds its two entries; nothing else in the registry changes).
+
+### 5.9 Real runs: only through the rig's own owner
+
+robot_controllers never drives hardware. Lane B2 writes `real/requests.py` (export, per real station, a run request in
+arm_motion_bench's bundle terms: the target, the configs, the rate) and `real/import_fullarm.py` (read a `fullarm_jtc` run
+folder + its bundle's `samples.npz` into an `EpisodeLog`: q in the plan's joint frame through the report's `board_map`,
+ref = the bundle's `q_reference` on the JTC's clock; `import_fullarm_run(run_dir, bundle_dir) -> (EpisodeLog, Rung)`), so
+the metrics and the sweep calibration run on real logs
+unchanged (`source: real` rows in the grade ledger).
+
+- **Only the board-side configs run on real** (P2, P4 tangent and secant, P5): every host-side feedback law saturated
+  the boards at 50 Hz in every sim.
+- **The logger needs per-board times for one-run calibration.** The first real log analysed (2026-11-20, `fullarm_jtc`,
+  model FF + 5.5 ms lookahead, 0.5 speed, 17.0 ms ticks) bounds the residual lag only to the exchange: −6 to +11 ms,
+  because each row is stamped at the exchange's end and the boards answer at different points inside it. Ask: stamp the
+  exchange start and the board order (or each reply's time). Until then the real calibration is the sweep.
+
+### 5.10 Lanes, order and write sets
+
+- **Lane A (the barrier, first, robot_controllers `main`)**: §5.1 wiring (`bench/arm_planar.py`, registry use in
+  `layouts.py`, `loop.py`, `study.py`, `ur5e.py`), §5.2 (`calibration.py`, `monitor.py`, `HostTiming.command_delay_steps`,
+  `HostTiming.from_bus`, `lookahead_from`, `plant.py`), §5.3 per-arm `ModelError` for planar and UR5e (`arm_models.py`,
+  `ur5e.py`), `scaled_board`, CLI `robot-controllers calibrate`. Acceptance: `tests/test_timing_acceptance.py`.
+- **Lane B1 (in parallel with A, its own worktree, additive files only)**: §5.8 (`bench/fivebar.py`, `bench/pendulum.py`,
+  `bench/models/*`), plus their two `ARM_MODULES` lines at merge. Acceptance: `tests/test_arms_acceptance.py`.
+- **Lane B2 (after A lands)**: §5.4–5.7 and §5.9 (`bench/targets.py`, `bench/scenarios.py`, `bench/population.py`,
+  `metrics/collision.py`, `metrics/names.py`, `grade.py`, `recommend.py`, `real/`, CLI `grade` / `recommend`,
+  `results/grade/`). Runs the grade once every arm is registered. Acceptance: `tests/test_grade_acceptance.py`.
+- The three acceptance files, `models.py`'s `ModelError` / `DriverCaps`, `timing.py` and `bench/arms.py` are the
+  dispatcher's, committed before the build. Builders extend `timing.py` / `arms.py` only where this section says so.
+- **The arm-powered rule binds every lane** (arm_motion_bench CONTRACT v3.8): while
+  `/home/bam/arm_motion_bench/outputs/ARM_POWERED` exists, or `rackq list` shows a job RUNNING, no pytest pool, sweep or
+  grade starts; finish the step in hand at 1 worker and wait. Always `taskset -c 2-5,16,17`, at most 2 workers.
+
