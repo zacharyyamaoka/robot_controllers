@@ -257,6 +257,7 @@ def run_episode(
         latched_tick=samples.get("latched_tick"),
         split_ff=rows.array("split_ff") if has_split else None,
         split_fb_host=rows.array("split_fb_host") if has_split else None,
+        tau_stop=samples.get("tau_stop"),
     )
 
 

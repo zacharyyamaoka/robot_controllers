@@ -400,11 +400,13 @@ class Ur5ePlant(ServoPlant):
         self.timing = timing or HostTiming()
         self._reset_bus(seed, self.timing)
         self.contact_calibration = None
-        self._model = model = _plant_model(float(scene.payload_kg), self.truth)
-        self._data = data = mujoco.MjData(model)
+        model = _plant_model(float(scene.payload_kg), self.truth)
         start_q = np.asarray(scene.start_q if scene.start_q is not None else self.home_q, dtype=float)
         if start_q.shape != (len(self.joint_names),):
             raise ValueError(f"start_q must be {len(self.joint_names)} joint angles, got {start_q}")
+        joint_ids = [model.joint(name).id for name in self.joint_names]
+        self._model = model = self._stopped_model(model, scene, joint_ids, start_q)
+        self._data = data = mujoco.MjData(model)
         self.start_q = tuple(float(v) for v in start_q)
         data.qpos[:] = start_q
         data.qvel[:] = 0.0
@@ -441,6 +443,8 @@ class Ur5ePlant(ServoPlant):
             qfrc[:] = tau
             mujoco.mj_step(model, data)
             # after mj_step the kinematics are those of the state at t (integration came last)
+            if self._stops:
+                self._record_stops(k, t)
             row = k - first_k
             self._sample_q[row] = boards.measured_position
             self._sample_qd[row] = boards.measured_velocity

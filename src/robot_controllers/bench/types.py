@@ -125,9 +125,19 @@ class Push:
     force_n: tuple[float, float, float]
 
 
+STOP_SIDES: tuple[str, ...] = ("upper", "lower")
+
+
 @dataclass(frozen=True)
 class Scene:
-    """What the plant contains for this rung. Plant-specific extras go in `extras`."""
+    """What the plant contains for this rung. Plant-specific extras go in `extras`.
+
+    Amendment 5 (§5.4, §5.10): `stops = ((joint_index, angle_rad, side), ...)` puts a stiff hard stop (a joint-range
+    limit) on one side of a plant joint: side `upper` blocks the joint above `angle_rad`, `lower` below it. Every
+    plant honours it (`ServoPlant._stopped_model`), records the stop's constraint torque per joint (`tau_stop`)
+    and a `stop_touch` event, and refuses a start pose already past a stop. `joint_index` is in the plant's joint
+    order.
+    """
 
     belt: bool = False  # a moving conveyor belt under the tool
     belt_speed_m_s: float = 0.25
@@ -137,6 +147,16 @@ class Scene:
     payload_kg: float = 0.0
     start_q: tuple[float, ...] | None = None  # rad; None = the plant's home
     extras: Mapping[str, Any] = field(default_factory=dict)
+    stops: tuple[tuple[int, float, str], ...] = ()  # (plant joint index, angle rad, "upper" | "lower")
+
+    def __post_init__(self) -> None:
+        stops = []
+        for stop in self.stops:
+            joint, angle, side = stop
+            if side not in STOP_SIDES or not math.isfinite(float(angle)) or int(joint) < 0:
+                raise ValueError(f"a stop is (joint_index >= 0, finite angle_rad, 'upper' | 'lower'), got {stop!r}")
+            stops.append((int(joint), float(angle), str(side)))
+        object.__setattr__(self, "stops", tuple(stops))
 
 
 # ── gates and rungs ─────────────────────────────────────────────────────────────────────────────────────────
@@ -264,6 +284,9 @@ class EpisodeLog:
     latched_tick: np.ndarray | None = None  # (N, J) int: the host-tick row whose command ran (-1 = none)
     split_ff: np.ndarray | None = None  # (K, J) the controller's last_split() feed-forward; NaN = it has none
     split_fb_host: np.ndarray | None = None  # (K, J) ... and the host feedback inside the feed-forward field
+    # amendment 5 (§5.4): the hard stops' constraint torque on each joint (N·m, signed, 0 off the stop); None = the
+    # scene had no stops
+    tau_stop: np.ndarray | None = None  # (N, J)
 
     def event_times(self, kind: str) -> list[float]:
         return [float(e["t"]) for e in self.events if e.get("kind") == kind]

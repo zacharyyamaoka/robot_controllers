@@ -52,6 +52,10 @@ TIME_TOLERANCE_S = 1e-9
 # WHY a fixed second entropy word: the bus jitter draws come from the episode seed but must never share a
 # stream with the host loop's wake jitter (np.random.default_rng(seed)), so adding bus jitter shifts no wake.
 BUS_JITTER_STREAM = 0xB05_2026
+# WHY the planar elbow's S2 stop (arm.ArmConfig.hard_stop_solref): a 2 ms time constant is a stiff stop MuJoCo still
+# integrates at 4 kHz, and the collision targets are then the same kind of wall the S2 rung seeks
+STOP_SOLREF: tuple[float, float] = (0.002, 1.0)
+STOP_FAR_RAD = 1.0e3  # the open side of a one-sided stop on a joint that had no range
 
 
 class ServoPlant:
@@ -87,6 +91,74 @@ class ServoPlant:
 
     def tool_position(self, q: Any) -> np.ndarray:
         raise NotImplementedError
+
+    # ── hard stops (amendment 5, Scene.stops) ──────────────────────────────────────────────────────────────
+
+    def _stopped_model(self, model: Any, scene: Any, joint_ids: Any, start_q: Any) -> Any:
+        """`model`, or a private copy of it with the scene's stops as joint-range limits (`STOP_SOLREF`), each
+        intersected with the joint's own range. `joint_ids[j]` is plant joint j's MuJoCo joint id. A plant's reset
+        calls this before it makes its MjData, and its advance calls `_record_stops(k, t)` after each `mj_step`."""
+        # (plant joint, MuJoCo joint id, side, angle, middle of the stopped range, qpos address)
+        self._stops: list[tuple[int, int, str, float, float, int]] = []
+        if not scene.stops:
+            return model
+        import copy
+
+        import mujoco
+
+        stopped = copy.deepcopy(model)  # WHY a copy: the plants cache their models across episodes
+        for joint, angle, side in scene.stops:
+            if not 0 <= joint < len(self.joint_names):
+                raise ValueError(f"stop on joint {joint}: the {self.name} has {len(self.joint_names)} joints")
+            start = float(start_q[joint])
+            if (side == "upper" and start > angle) or (side == "lower" and start < angle):
+                raise ValueError(
+                    f"the {self.name} starts at {start:.4f} rad on {self.joint_names[joint]}, past its "
+                    f"{side} stop at {angle:.4f} rad"
+                )
+            jid = int(joint_ids[joint])
+            low, high = (
+                (float(stopped.jnt_range[jid][0]), float(stopped.jnt_range[jid][1]))
+                if stopped.jnt_limited[jid]
+                else (-STOP_FAR_RAD, STOP_FAR_RAD)
+            )
+            low, high = (low, min(high, angle)) if side == "upper" else (max(low, angle), high)
+            stopped.jnt_limited[jid] = 1
+            stopped.jnt_range[jid] = (low, high)
+            stopped.jnt_solref[jid] = STOP_SOLREF
+            # WHY the range's middle: a joint-limit row only says which joint; the stop's row is the one at the
+            # stop's end of the range, the joint's other (original or far) limit is not this stop
+            self._stops.append((joint, jid, side, angle, 0.5 * (low + high), int(stopped.jnt_qposadr[jid])))
+        self._stop_touched = [False] * len(self._stops)
+        self._limit_row = int(mujoco.mjtConstraint.mjCNSTR_LIMIT_JOINT)
+        return stopped
+
+    def _record_stops(self, k: int, t: float) -> None:
+        """The stops' constraint torque on their joints at step k (after its mj_step), and each first touch."""
+        data = self._data
+        torque = [0.0] * len(self.joint_names)
+        count = int(data.nefc)
+        kinds = data.efc_type[:count]
+        ids = data.efc_id[:count]
+        forces = data.efc_force[:count]
+        for index, (joint, jid, side, angle, middle, qpos_address) in enumerate(self._stops):
+            position = float(data.qpos[qpos_address])
+            if (position > middle) != (side == "upper"):
+                continue  # at the other end of the range
+            for row in range(count):
+                if int(kinds[row]) != self._limit_row or int(ids[row]) != jid:
+                    continue
+                # a limit row pushes the joint back inside its range: + at the lower end, - at the upper
+                force = float(forces[row])
+                torque[joint] += -force if side == "upper" else force
+                if force > 0.0 and not self._stop_touched[index]:
+                    self._stop_touched[index] = True
+                    self.events.append(
+                        {"t": t, "kind": "stop_touch", "joint": self.joint_names[joint], "angle_rad": angle,
+                         "side": side}
+                    )
+        if k >= 0:
+            self._tau_stop[k] = torque
 
     # ── the bus ────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -174,6 +246,7 @@ class ServoPlant:
         self._tau_ff = np.zeros((rows, joints))
         self._tau_fb_board = np.zeros((rows, joints))
         self._latched_tick = np.full((rows, joints), -1, dtype=np.int64)
+        self._tau_stop = np.zeros((rows, joints))  # amendment 5: the hard stops' torque (Scene.stops)
 
     def _grow(self) -> None:
         names = (
@@ -193,6 +266,7 @@ class ServoPlant:
             "_tau_ff",
             "_tau_fb_board",
             "_latched_tick",
+            "_tau_stop",
         )
         old = {name: getattr(self, name) for name in names}
         self._allocate(self._capacity * 2)
@@ -229,9 +303,14 @@ class ServoPlant:
         return max(self._k, 0)
 
     def samples(self) -> dict[str, np.ndarray]:
-        """The plant rows recorded so far (t >= 0), copies, keyed as EpisodeLog's plant fields."""
+        """The plant rows recorded so far (t >= 0), copies, keyed as EpisodeLog's plant fields (`tau_stop` only
+        when the scene has stops)."""
         rows = self.sample_count
-        return {
+        if getattr(getattr(self, "scene", None), "stops", ()) and not getattr(self, "_stops", None):
+            # WHY loud: a plant that silently ignored a stop would score a collision target as free motion
+            raise NotImplementedError(f"the {self.name} plant does not honour Scene.stops (see _stopped_model)")
+        extra = {"tau_stop": self._tau_stop[:rows].copy()} if getattr(self, "_stops", None) else {}
+        return {**extra,
             "t": self._t[:rows].copy(),
             "q": self._q[:rows].copy(),
             "qd": self._qd[:rows].copy(),
@@ -286,12 +365,13 @@ class PlanarArmPlant(ServoPlant):
         self.seed = int(seed)
         self.timing = timing or HostTiming()
         self._reset_bus(seed, self.timing)
-        self._model, self.contact_calibration = build_model(scene, self.arm)
-        model = self._model
-        self._data = data = mujoco.MjData(model)
+        model, self.contact_calibration = build_model(scene, self.arm)
         start_q = np.asarray(scene.start_q if scene.start_q is not None else self.home_q, dtype=float)
         if start_q.shape != (2,):
             raise ValueError(f"start_q must be 2 joint angles, got {start_q}")
+        joint_ids = [model.joint(name).id for name in self.joint_names]
+        self._model = model = self._stopped_model(model, scene, joint_ids, start_q)
+        self._data = data = mujoco.MjData(model)
         self.start_q = tuple(float(v) for v in start_q)
         data.qpos[:2] = start_q
         data.qvel[:] = 0.0
@@ -376,6 +456,8 @@ class PlanarArmPlant(ServoPlant):
             )  # the friction acts at the contact point, R below the centre
             mujoco.mj_step(model, data)
             # after mj_step, kinematics and contact forces are those of the state at t (integration came last)
+            if self._stops:
+                self._record_stops(k, t)
             normal = 0.0
             normal_z = 0.0
             for contact_index in range(data.ncon):
