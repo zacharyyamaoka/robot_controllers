@@ -261,14 +261,17 @@ def run_episode(
 
 
 def plant_for(name: str) -> Any:
-    """A fresh plant by `Rung.plant` name: `planar_arm` or `ur5e`."""
+    """A fresh plant by `Rung.plant` name: any arm in the registry (`bench.arms`, amendment 5 §5.1), on its own
+    nominal boards. An unknown name is a ValueError."""
     if name == "planar_arm":
-        return PlanarArmPlant()
-    if name == "ur5e":
-        from robot_controllers.bench.ur5e import Ur5ePlant
+        return PlanarArmPlant()  # WHY direct: the ladder's plant, without importing every registered arm
+    from robot_controllers.bench.arms import arm
 
-        return Ur5ePlant()
-    raise ValueError(f"unknown plant {name!r}; known: planar_arm, ur5e")
+    try:
+        spec = arm(name)
+    except KeyError as error:
+        raise ValueError(f"unknown plant {name!r}: {error.args[0]}") from None
+    return spec.plant()
 
 
 def _tool_positions(plant: Any, positions: np.ndarray) -> np.ndarray:

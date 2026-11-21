@@ -145,13 +145,9 @@ def stagger_delays_s(joint_count: int) -> tuple[float, ...]:
 
 
 def _joint_count(arm: str) -> int:
-    if arm == "ur5e":
-        from robot_controllers.bench.ur5e import UR5E_JOINTS
+    from robot_controllers.bench.arms import arm as registered
 
-        return len(UR5E_JOINTS)
-    from robot_controllers.bench.arm import JOINT_NAMES
-
-    return len(JOINT_NAMES)
+    return len(registered(arm).joint_names)
 
 
 def _layout4_at(arm: str) -> Callable[[float | tuple[float, ...]], Any]:

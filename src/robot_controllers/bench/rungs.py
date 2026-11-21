@@ -776,22 +776,23 @@ def _respeed(script: Any, move_s: float, rung: Rung) -> Any:
 
 
 def _home(plant: str) -> np.ndarray:
-    if plant == "ur5e":
-        from robot_controllers.bench.ur5e import UR5E_HOME_Q
+    """The home joints of `plant`, any arm in the registry (§5.1)."""
+    if plant == "planar_arm":
+        return np.asarray(HOME_Q, dtype=float)
+    from robot_controllers.bench.arms import arm
 
-        return np.asarray(UR5E_HOME_Q, dtype=float)
-    return np.asarray(HOME_Q, dtype=float)
+    return np.asarray(arm(plant).home_q, dtype=float)
 
 
 def _tool_positions(plant: str, q: np.ndarray) -> np.ndarray:
-    """(N, 3) tool positions of joint samples on `plant`'s own kinematics."""
-    if plant == "ur5e":
-        from robot_controllers.bench.ur5e import tool_position as ur5e_tool_position
+    """(N, 3) tool positions of joint samples on `plant`'s own kinematics (the registry's, §5.1)."""
+    if plant == "planar_arm":
+        from robot_controllers.bench.arm import tool_position
 
-        return ur5e_tool_position(q)
-    from robot_controllers.bench.arm import tool_position
+        return tool_position(q)
+    from robot_controllers.bench.arms import arm
 
-    return tool_position(q)
+    return np.asarray(arm(plant).tool_position(q))
 
 
 def speed_variant(rung: Rung, move_s: float) -> Rung:

@@ -36,6 +36,7 @@ simulated second.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from collections import deque
 from collections.abc import Mapping, Sequence
@@ -89,6 +90,22 @@ class BoardConfig:
                 raise ValueError(
                     f"BoardConfig.{name} has {len(getattr(self, name))} values for {joint_count} joints"
                 )
+
+
+def scaled_board(board: BoardConfig, gain_scale: float) -> BoardConfig:
+    """`board` with its configured kp and kd multiplied by `gain_scale` (CONTRACT §5.3); caps, encoder, rates and
+    the watchdog kept. WHY one number: "how good the feedback we are given is" is a sweep axis, and a board's
+    stiffness and damping scaled together keep its damping ratio."""
+    scale = float(gain_scale)
+    if not (math.isfinite(scale) and scale > 0.0):
+        raise ValueError(f"gain_scale must be finite and > 0, got {gain_scale!r}")
+    if scale == 1.0:
+        return board
+    return dataclasses.replace(
+        board,
+        kp_nm_rad=tuple(float(v) * scale for v in board.kp_nm_rad),
+        kd_nm_s_rad=tuple(float(v) * scale for v in board.kd_nm_s_rad),
+    )
 
 
 @dataclass(frozen=True)

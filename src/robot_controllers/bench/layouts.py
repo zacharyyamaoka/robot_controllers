@@ -49,8 +49,8 @@ from typing import Any
 import numpy as np
 
 from robot_controllers.bench.arm import ARM, HOME_Q, ArmConfig
-from robot_controllers.bench.arm_models import RIGID_BODY, planar_arm_feedforward, planar_arm_mass_matrix
-from robot_controllers.bench.board import BoardConfig
+from robot_controllers.bench.arm_models import planar_arm_mass_matrix
+from robot_controllers.bench.board import BoardConfig, scaled_board
 from robot_controllers.bench.types import HostTiming
 from robot_controllers.core import ControllerSpec
 from robot_controllers.models import (
@@ -59,12 +59,17 @@ from robot_controllers.models import (
     PD,
     InertiaScaledPD,
     Layout,
+    ModelError,
 )
 from robot_controllers.registry import JOINT_TRAJECTORY
 
 FEEDFORWARD_MODELS: tuple[str, ...] = ("trajectory", "none", "gravity", "rigid_body", "rigid_body_coulomb")
 FEEDBACK_MODELS: tuple[str, ...] = ("board_gains", "pd", "ctc")
-ARMS: tuple[str, ...] = ("planar_arm", "ur5e")  # the plants a layout's model names resolve on (§4.5)
+ARMS: tuple[str, ...] = ("planar_arm", "ur5e")  # the arms of the layout sweep and the study (§4.5)
+# WHY a named joint per arm (§3.6, §4.5): CTC is matched to the board where the arm carries the most inertia, the
+# planar shoulder and the UR5e's shoulder_lift; an arm not listed uses the joint with the largest M_jj(home), which
+# picks those same two joints.
+CTC_REFERENCE_JOINT: dict[str, str] = {"planar_arm": "shoulder", "ur5e": "shoulder_lift_joint"}
 SWEPT_RUNGS: tuple[str, ...] = (
     "R1.FreeSpace",
     "R2.FastFreeSpace",
@@ -122,46 +127,54 @@ def ctc_record(board: BoardConfig | None = None, arm: ArmConfig = ARM) -> dict[s
     }
 
 
-def feedforward_model(name: str, arm: str = "planar_arm") -> Any:
-    """The feed-forward function a sweep name stands for on `arm` (None for `trajectory` and `none`: no
-    model)."""
+def arm_spec(arm: str) -> Any:
+    """The registry's `ArmSpec` for `arm` (§5.1); an unknown arm is a ValueError, as before the registry."""
+    from robot_controllers.bench.arms import arm as registered
+
+    try:
+        return registered(arm)
+    except KeyError as error:
+        raise ValueError(str(error.args[0])) from None
+
+
+def feedforward_model(name: str, arm: str = "planar_arm", model_error: ModelError | None = None) -> Any:
+    """The feed-forward function a sweep name stands for on `arm`, built with `model_error` (§5.3; None = the
+    nominal model). None for `trajectory` and `none`: no model."""
     if name in ("trajectory", "none"):
         return None
-    if arm == "ur5e":
-        if name not in FEEDFORWARD_MODELS:
-            raise ValueError(f"unknown feed-forward model {name!r}; known: {FEEDFORWARD_MODELS}")
-        from robot_controllers.bench.ur5e import ur5e_feedforward
-
-        return ur5e_feedforward(name)
-    if name == "gravity":
-        return planar_arm_feedforward(("gravity",))
-    if name == "rigid_body":
-        return planar_arm_feedforward(RIGID_BODY)
-    if name == "rigid_body_coulomb":
-        return planar_arm_feedforward((*RIGID_BODY, "coulomb"))
-    raise ValueError(f"unknown feed-forward model {name!r}; known: {FEEDFORWARD_MODELS}")
+    if name not in FEEDFORWARD_MODELS:
+        raise ValueError(f"unknown feed-forward model {name!r}; known: {FEEDFORWARD_MODELS}")
+    return arm_spec(arm).feedforward(name, model_error)
 
 
-def feedback_model(name: str, arm: str = "planar_arm") -> Any:
+def ctc_reference_joint(spec: Any, mass_matrix: Any) -> int:
+    """The joint CTC's bandwidth is matched on: `CTC_REFERENCE_JOINT`, else the largest M_jj at home."""
+    name = CTC_REFERENCE_JOINT.get(spec.name)
+    if name is not None:
+        return spec.joint_names.index(name)
+    return int(np.argmax(np.diag(np.asarray(mass_matrix(np.asarray(spec.home_q, dtype=float))))))
+
+
+def feedback_model(
+    name: str, arm: str = "planar_arm", model_error: ModelError | None = None, gain_scale: float = 1.0
+) -> Any:
     """The feedback function a sweep name stands for on `arm` (None for `board_gains`: the board's own
-    gains)."""
+    gains). `pd` is the arm's board gains × `gain_scale` as a pure function; `ctc` is computed torque on the arm's
+    mass matrix with `model_error`, its bandwidth set so its kp at home on the reference joint equals that board kp
+    (§3.6, §4.5): with the defaults these are the models the layout sweep and the study ran."""
     if name == "board_gains":
         return None
-    if arm == "ur5e":
-        from robot_controllers.bench.ur5e import ur5e_board_config, ur5e_ctc_bandwidth_hz, ur5e_mass_matrix
-
-        board = ur5e_board_config()
-        if name == "pd":
-            return PD(board.kp_nm_rad, board.kd_nm_s_rad)
-        if name == "ctc":
-            return InertiaScaledPD(ur5e_ctc_bandwidth_hz(), CTC_DAMPING_RATIO, ur5e_mass_matrix())
+    if name not in FEEDBACK_MODELS:
         raise ValueError(f"unknown feedback model {name!r}; known: {FEEDBACK_MODELS}")
-    board = BoardConfig()
+    spec = arm_spec(arm)
+    board = scaled_board(spec.board_config(), gain_scale)
     if name == "pd":
         return PD(board.kp_nm_rad, board.kd_nm_s_rad)
-    if name == "ctc":
-        return InertiaScaledPD(ctc_bandwidth_hz(board), CTC_DAMPING_RATIO, planar_arm_mass_matrix())
-    raise ValueError(f"unknown feedback model {name!r}; known: {FEEDBACK_MODELS}")
+    mass = spec.mass_matrix(model_error)
+    joint = ctc_reference_joint(spec, mass)
+    inertia = float(mass(spec.home_q)[joint, joint])
+    bandwidth = math.sqrt(float(board.kp_nm_rad[joint]) / inertia) / (2.0 * math.pi)
+    return InertiaScaledPD(bandwidth, CTC_DAMPING_RATIO, mass)
 
 
 def feedforward_placements(model: str) -> tuple[str, ...]:
@@ -229,16 +242,22 @@ def layout_spec(
     lookahead_s: float | Sequence[float] = 0.0,
     interpolation: str = "tangent",
     arm: str = "planar_arm",
+    model_error: ModelError | None = None,
+    gain_scale: float = 1.0,
 ) -> ControllerSpec:
     """The LayoutController for one sweep point, as a built ControllerSpec named
     `ff=<model>@<at>+fb=<model>@<at>` (`+la=<ms>ms` with a lookahead, `+interp=<value>` with a non-default
     interpolation).
 
+    `arm` is any registered arm (§5.1). `model_error` is how wrong the feed-forward and the CTC mass matrix it is
+    given are, and `gain_scale` multiplies the board gains `pd` and `ctc` are built from (§5.3; the plant's own
+    boards are the run's: `scaled_board` on the plant for a scenario with other gains). Neither changes the name:
+    a scenario names them.
+
     Raises ValueError for a pair the layout cannot place (`trajectory` only @trajectory, `none` only @none, a
-    model only @plan/@host_*, `board_gains` only @board).
+    model only @plan/@host_*, `board_gains` only @board), and for an arm the registry does not have.
     """
-    if arm not in ARMS:
-        raise ValueError(f"unknown arm {arm!r}; known: {ARMS}")
+    arm_spec(arm)
     if ff_at not in feedforward_placements(ff_model):
         raise ValueError(
             f"feed-forward {ff_model!r} cannot be placed at {ff_at!r}; "
@@ -248,7 +267,8 @@ def layout_spec(
         raise ValueError(
             f"feedback {fb_model!r} cannot be placed at {fb_at!r}; it goes at {feedback_placements(fb_model)}"
         )
-    feedforward, feedback = feedforward_model(ff_model, arm), feedback_model(fb_model, arm)
+    feedforward = feedforward_model(ff_model, arm, model_error)
+    feedback = feedback_model(fb_model, arm, model_error, gain_scale)
     layout = Layout(ff_at, fb_at, lookahead_s=lookahead_s, interpolation=interpolation)
     layout.check(feedforward, feedback)
     ff_text = {"trajectory": "the trajectory's own effort column", "none": "no feed-forward"}.get(
@@ -271,6 +291,7 @@ def layout_spec(
         box=JOINT_TRAJECTORY,
         runs_on=_RUNS_ON[fb_at],
         summary=f"The layout controller with {ff_text} and {fb_text}{ahead}"
+        + _given_text(model_error, gain_scale)
         + ("." if arm == "planar_arm" else f", on the {arm}."),
         target=f"{_LC}:LayoutController",
         config_target=f"{_LC}:LayoutConfig",
@@ -278,6 +299,16 @@ def layout_spec(
         variant_of="layout_controller",
         default_config={"feedforward": feedforward, "feedback": feedback, "layout": layout},
     )
+
+
+def _given_text(model_error: ModelError | None, gain_scale: float) -> str:
+    """", models ff±10%, gains ×0.5" when the controller was given a wrong model or other gains; "" otherwise."""
+    parts = []
+    if model_error is not None and not model_error.is_nominal:
+        parts.append(f"models {model_error.label}")
+    if float(gain_scale) != 1.0:
+        parts.append(f"gains ×{float(gain_scale):g}")
+    return "" if not parts else ", " + ", ".join(parts)
 
 
 # ── the recommendation ─────────────────────────────────────────────────────────────────────────────────────

@@ -25,6 +25,11 @@ conclusion that holds on both is not an artefact of two links.
   is `mj_inverse` on its own private copy of the nominal model (no payload, no dry friction).
 - **Feedback.** `ur5e_mass_matrix()` is `mj_fullM`; `ctc` (layouts) is InertiaScaledPD ζ 0.9 at the bandwidth
   whose shoulder_lift kp at home equals the board's (`ur5e_ctc_bandwidth_hz`).
+- **Model error** (amendment 5, §5.3): `ur5e_feedforward(name, model_error)` and `ur5e_mass_matrix(model_error)`
+  scale, on their private copy, the mass and inertia of every body that carries a joint (model order) by
+  `model_error.link_factors(6)` and `dof_damping` and the dry friction by `friction_factor`; the armature stays.
+- **Registry** (§5.1): the module registers `UR5E_ARM` with `bench.arms` at import; its fixed targets are
+  `bench.targets.ur5e_targets()`.
 """
 
 from __future__ import annotations
@@ -38,9 +43,11 @@ from typing import Any
 
 import numpy as np
 
+from robot_controllers.bench.arms import ArmSpec, register
 from robot_controllers.bench.board import BoardConfig
 from robot_controllers.bench.plant import PREROLL_S, TIME_TOLERANCE_S, ServoPlant
 from robot_controllers.bench.types import HostTiming, Rung, Scene
+from robot_controllers.models import ModelError
 
 MODEL_PATH = Path(__file__).resolve().parent / "models" / "ur5e_bare.xml"
 UR5E_JOINTS: tuple[str, ...] = (
@@ -122,18 +129,39 @@ def _plant_model(payload_kg: float, truth: Ur5eTruth) -> Any:
     return load_model(payload_kg=payload_kg, frictionloss=True, truth=truth)
 
 
+def _told(model_error: ModelError | None) -> ModelError | None:
+    """The model error a model carries: None for the nominal model (so `ModelError()` is exactly today's)."""
+    if model_error is None:
+        return None
+    if not isinstance(model_error, ModelError):
+        raise TypeError(f"model_error must be a ModelError, got {model_error!r}")
+    return None if model_error.is_nominal else model_error
+
+
+def jointed_bodies(model: Any) -> list[int]:
+    """The bodies that carry a joint, in model order: the links a `ModelError` scales (§5.3)."""
+    return [body for body in range(model.nbody) if model.body_jntnum[body] > 0]
+
+
 class _Private:
     """A private nominal model and its data: what makes each UR5e model function pure from the outside."""
 
     __slots__ = ("model", "data")
 
-    def __init__(self) -> None:
+    def __init__(self, model_error: ModelError | None = None) -> None:
         import mujoco
 
         # WHY no frictionloss: dry friction is a constraint, and mj_inverse would put its (unknowable)
         # force into the feed-forward; the nominal model is rigid body + armature + viscous damping, no
         # payload (as the planar arm's nominal_dynamics)
         self.model = load_model(frictionloss=False)
+        if model_error is not None:
+            # WHY the armature stays: it is the drive's reflected inertia, not the link's (§5.3)
+            bodies = jointed_bodies(self.model)
+            for body, factor in zip(bodies, model_error.link_factors(len(bodies)), strict=True):
+                self.model.body_mass[body] *= factor
+                self.model.body_inertia[body] *= factor
+            self.model.dof_damping[:] *= model_error.friction_factor
         self.data = mujoco.MjData(self.model)
 
 
@@ -145,22 +173,24 @@ def _rows(q: Any, qd: Any, qdd: Any) -> tuple[bool, np.ndarray, np.ndarray, np.n
 
 class Ur5eFeedforward:
     """`ff(q, qd, qdd) -> tau` on the UR5e: (6,) -> (6,), (N, 6) -> (N, 6). Pure; `mj_inverse` on a private
-    copy of the nominal model (`gravity` with qd and qdd zero)."""
+    copy of the nominal model (`gravity` with qd and qdd zero), with `model_error`'s links and friction."""
 
-    __slots__ = ("name", "_private", "_friction")
+    __slots__ = ("name", "model_error", "_private", "_friction")
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, model_error: ModelError | None = None) -> None:
         if name not in FEEDFORWARD_NAMES:
             raise ValueError(f"unknown UR5e feed-forward {name!r}; known: {FEEDFORWARD_NAMES}")
         self.name = name
+        self.model_error = _told(model_error)
         self._private: _Private | None = None
-        self._friction = np.asarray(UR5E_TRUTH.frictionloss_nm, dtype=np.float64)
+        friction = np.asarray(UR5E_TRUTH.frictionloss_nm, dtype=np.float64)
+        self._friction = friction if self.model_error is None else friction * self.model_error.friction_factor
 
     def __call__(self, q: Any, qd: Any, qdd: Any) -> np.ndarray:
         import mujoco
 
         if self._private is None:
-            self._private = _Private()
+            self._private = _Private(self.model_error)
         model, data = self._private.model, self._private.data
         single, q, qd, qdd = _rows(q, qd, qdd)
         out = np.empty((q.shape[0], model.nv))
@@ -180,29 +210,34 @@ class Ur5eFeedforward:
         return out[0] if single else out
 
     def __repr__(self) -> str:
-        return f"ur5e_feedforward({self.name!r})"
+        error = "" if self.model_error is None else f", model_error={self.model_error!r}"
+        return f"ur5e_feedforward({self.name!r}{error})"
 
     def __eq__(self, other: object) -> bool:
-        return isinstance(other, Ur5eFeedforward) and other.name == self.name
+        return isinstance(other, Ur5eFeedforward) and (other.name, other.model_error) == (
+            self.name,
+            self.model_error,
+        )
 
     def __hash__(self) -> int:
-        return hash(("ur5e_feedforward", self.name))
+        return hash(("ur5e_feedforward", self.name, self.model_error))
 
 
 class Ur5eMassMatrix:
     """`mass(q) -> M(q)`: the UR5e's joint-space inertia, armature included (`mj_fullM`), (6,) -> (6, 6),
-    (N, 6) -> (N, 6, 6). Pure."""
+    (N, 6) -> (N, 6, 6). Pure; with `model_error`'s links."""
 
-    __slots__ = ("_private",)
+    __slots__ = ("model_error", "_private")
 
-    def __init__(self) -> None:
+    def __init__(self, model_error: ModelError | None = None) -> None:
+        self.model_error = _told(model_error)
         self._private: _Private | None = None
 
     def __call__(self, q: Any) -> np.ndarray:
         import mujoco
 
         if self._private is None:
-            self._private = _Private()
+            self._private = _Private(self.model_error)
         model, data = self._private.model, self._private.data
         q = np.asarray(q, dtype=np.float64)
         rows = np.atleast_2d(q)
@@ -217,23 +252,24 @@ class Ur5eMassMatrix:
         return out[0] if q.ndim == 1 else out
 
     def __repr__(self) -> str:
-        return "ur5e_mass_matrix()"
+        return "ur5e_mass_matrix()" if self.model_error is None else f"ur5e_mass_matrix({self.model_error!r})"
 
     def __eq__(self, other: object) -> bool:
-        return isinstance(other, Ur5eMassMatrix)
+        return isinstance(other, Ur5eMassMatrix) and other.model_error == self.model_error
 
     def __hash__(self) -> int:
-        return hash("ur5e_mass_matrix")
+        return hash(("ur5e_mass_matrix", self.model_error))
 
 
-def ur5e_feedforward(terms: str) -> Ur5eFeedforward:
-    """The UR5e feed-forward named `terms`: `gravity`, `rigid_body` or `rigid_body_coulomb` (§4.5)."""
-    return Ur5eFeedforward(terms)
+def ur5e_feedforward(terms: str, model_error: ModelError | None = None) -> Ur5eFeedforward:
+    """The UR5e feed-forward named `terms`: `gravity`, `rigid_body` or `rigid_body_coulomb` (§4.5), with
+    `model_error`'s links and friction (§5.3; None = the nominal model)."""
+    return Ur5eFeedforward(terms, model_error)
 
 
-def ur5e_mass_matrix() -> Ur5eMassMatrix:
-    """The UR5e's joint-space inertia M(q), armature included, no payload."""
-    return Ur5eMassMatrix()
+def ur5e_mass_matrix(model_error: ModelError | None = None) -> Ur5eMassMatrix:
+    """The UR5e's joint-space inertia M(q), armature included, no payload (with `model_error`'s links)."""
+    return Ur5eMassMatrix(model_error)
 
 
 class _Kinematics:
@@ -543,3 +579,34 @@ def ur5e_rungs() -> tuple[Rung, ...]:
             )
         )
     return tuple(out)
+
+
+# ── the registry (amendment 5, §5.1) ───────────────────────────────────────────────────────────────────────
+
+
+def ur5e_plant(board_config: BoardConfig | None = None) -> Ur5ePlant:
+    """A fresh UR5e plant (its own boards unless `board_config` says otherwise)."""
+    return Ur5ePlant(board_config=board_config)
+
+
+def ur5e_targets() -> tuple[Any, ...]:
+    """The UR5e's fixed targets (§5.4): U2's path at three speeds, a calibration sweep and a collision."""
+    from robot_controllers.bench.targets import ur5e_targets as targets
+
+    return targets()
+
+
+UR5E_ARM = register(
+    ArmSpec(
+        name="ur5e",
+        title="UR5e (6 joints)",
+        joint_names=UR5E_JOINTS,
+        home_q=UR5E_HOME_Q,
+        plant=ur5e_plant,
+        board_config=ur5e_board_config,
+        feedforward=ur5e_feedforward,
+        mass_matrix=ur5e_mass_matrix,
+        tool_position=tool_position,
+        targets=ur5e_targets,
+    )
+)

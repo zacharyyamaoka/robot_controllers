@@ -28,6 +28,12 @@ The oracle is MuJoCo: with {gravity, inertia, coriolis, viscous} this equals `ar
 
 The models are small classes with a stable repr (not closures), so a ledger that records a config shows
 `planar_arm_feedforward(('gravity',), payload_kg=0.0)` instead of a memory address.
+
+Model error (amendment 5, §5.3): `model_error=ModelError(scale, seed, friction_scale)` is what the controller is
+told when its model is wrong. Link 1 (the rod) and link 2 (the rod and the tool, whose mass rides with link 2) get
+`model_error.link_factors(2)` on their mass and inertia; the viscous and dry friction get `friction_factor`; the
+armature stays (it is the drive's, not the link's). `None` and `ModelError()` are the nominal model exactly. The
+plant never changes: only the model the controller holds.
 """
 
 from __future__ import annotations
@@ -37,6 +43,7 @@ from typing import Any
 import numpy as np
 
 from robot_controllers.bench.arm import ARM, ArmConfig
+from robot_controllers.models import ModelError
 
 GRAVITY_M_S2 = 9.81  # the MJCF's `<option gravity="0 0 -9.81">`
 COULOMB_SMOOTHING_RAD_S = 0.01  # coulomb = frictionloss · tanh(qd / 0.01 rad/s) (CONTRACT §3.1)
@@ -44,24 +51,41 @@ TERMS: tuple[str, ...] = ("gravity", "inertia", "coriolis", "viscous", "coulomb"
 RIGID_BODY: tuple[str, ...] = ("gravity", "inertia", "coriolis", "viscous")  # = the nominal model
 
 
+def _told(model_error: ModelError | None) -> ModelError | None:
+    """The model error a model carries: None for the nominal model (so `ModelError()` is exactly today's)."""
+    if model_error is None:
+        return None
+    if not isinstance(model_error, ModelError):
+        raise TypeError(f"model_error must be a ModelError, got {model_error!r}")
+    return None if model_error.is_nominal else model_error
+
+
 class _Parameters:
     """The lumped inertial parameters of the two links (see the module docstring)."""
 
     __slots__ = ("l1", "a1", "a2", "b1", "b2", "f1", "f2", "s1", "m2", "s2", "j1", "j2")
 
-    def __init__(self, arm: ArmConfig, payload_kg: float) -> None:
+    def __init__(self, arm: ArmConfig, payload_kg: float, model_error: ModelError | None = None) -> None:
         l1, l2 = arm.link1_length_m, arm.link2_length_m
-        m1, m2, tool = arm.link1_mass_kg, arm.link2_mass_kg, arm.tool_mass_kg + payload_kg
+        if model_error is None:
+            link1 = link2 = friction = 1.0
+        else:
+            link1, link2 = (float(f) for f in model_error.link_factors(2))
+            friction = float(model_error.friction_factor)
+        # WHY the tool scales with link 2 (§5.3): it is the body at link 2's end, and a told payload does not
+        # (the controller was told that number; it is not the link's error)
+        m1, m2 = link1 * arm.link1_mass_kg, link2 * arm.link2_mass_kg
+        tool = link2 * arm.tool_mass_kg + payload_kg
         self.l1 = l1
         self.a1, self.a2 = (float(v) for v in arm.armature_kg_m2)
-        self.b1, self.b2 = (float(v) for v in arm.damping_nm_s_rad)
-        self.f1, self.f2 = (float(v) for v in arm.frictionloss_nm)
+        self.b1, self.b2 = (friction * float(v) for v in arm.damping_nm_s_rad)
+        self.f1, self.f2 = (friction * float(v) for v in arm.frictionloss_nm)
         # WHY the MJCF's own rounding: arm.build_mjcf writes each rod's inertia about its middle with 9
         # significant digits (link 2's m l²/12 = 0.00416666667) and the tool's with 9; the closed form
         # describes the arm the bench simulates, so it takes the same numbers (3e-12 kg·m² otherwise, 1e-10
         # N·m at 20 rad/s²).
-        rod1 = float(f"{m1 * l1**2 / 12.0:.9g}")
-        rod2 = float(f"{m2 * l2**2 / 12.0:.9g}")
+        rod1 = link1 * float(f"{arm.link1_mass_kg * l1**2 / 12.0:.9g}")
+        rod2 = link2 * float(f"{arm.link2_mass_kg * l2**2 / 12.0:.9g}")
         sphere = float(f"{0.4 * tool * arm.tool_radius_m**2:.9g}")
         self.s1 = m1 * l1 / 2.0
         self.j1 = rod1 + m1 * (l1 / 2.0) ** 2
@@ -74,15 +98,20 @@ def _arm_text(arm: ArmConfig) -> str:
     return "" if arm == ARM else f", arm={arm!r}"
 
 
+def _error_text(model_error: ModelError | None) -> str:
+    return "" if model_error is None else f", model_error={model_error!r}"
+
+
 class PlanarArmMassMatrix:
     """`mass(q) -> M(q)`: the planar arm's joint-space inertia (armature included), (2,) -> (2, 2), (N, 2) ->
     (N, 2, 2). Pure."""
 
-    __slots__ = ("arm", "_p")
+    __slots__ = ("arm", "model_error", "_p")
 
-    def __init__(self, arm: ArmConfig = ARM) -> None:
+    def __init__(self, arm: ArmConfig = ARM, model_error: ModelError | None = None) -> None:
         self.arm = arm
-        self._p = _Parameters(arm, 0.0)
+        self.model_error = _told(model_error)
+        self._p = _Parameters(arm, 0.0, self.model_error)
 
     def __call__(self, q: Any) -> np.ndarray:
         p = self._p
@@ -94,21 +123,30 @@ class PlanarArmMassMatrix:
         return np.stack([np.stack([m11, m12], axis=-1), np.stack([m12, m22], axis=-1)], axis=-2)
 
     def __repr__(self) -> str:
-        return f"planar_arm_mass_matrix({_arm_text(self.arm).lstrip(', ')})"
+        return f"planar_arm_mass_matrix({(_arm_text(self.arm) + _error_text(self.model_error)).lstrip(', ')})"
 
     def __eq__(self, other: object) -> bool:
-        return isinstance(other, PlanarArmMassMatrix) and other.arm == self.arm
+        return isinstance(other, PlanarArmMassMatrix) and (other.arm, other.model_error) == (
+            self.arm,
+            self.model_error,
+        )
 
     def __hash__(self) -> int:
-        return hash(("planar_arm_mass_matrix", self.arm))
+        return hash(("planar_arm_mass_matrix", self.arm, self.model_error))
 
 
 class PlanarArmFeedforward:
     """`ff(q, qd, qdd) -> tau` for the chosen dynamics terms, (2,) -> (2,), (N, 2) -> (N, 2). Pure."""
 
-    __slots__ = ("terms", "payload_kg", "arm", "_p", "_use")
+    __slots__ = ("terms", "payload_kg", "arm", "model_error", "_p", "_use")
 
-    def __init__(self, terms: tuple[str, ...], arm: ArmConfig = ARM, payload_kg: float = 0.0) -> None:
+    def __init__(
+        self,
+        terms: tuple[str, ...],
+        arm: ArmConfig = ARM,
+        payload_kg: float = 0.0,
+        model_error: ModelError | None = None,
+    ) -> None:
         terms = tuple(str(t) for t in terms)
         unknown = [t for t in terms if t not in TERMS]
         if not terms or unknown or len(set(terms)) != len(terms):
@@ -119,7 +157,8 @@ class PlanarArmFeedforward:
         self.terms = terms
         self.payload_kg = payload
         self.arm = arm
-        self._p = _Parameters(arm, payload)
+        self.model_error = _told(model_error)
+        self._p = _Parameters(arm, payload, self.model_error)
         self._use = frozenset(terms)
 
     def __call__(self, q: Any, qd: Any, qdd: Any) -> np.ndarray:
@@ -154,29 +193,37 @@ class PlanarArmFeedforward:
         return np.stack([np.broadcast_to(tau1, shape[:-1]), np.broadcast_to(tau2, shape[:-1])], axis=-1)
 
     def __repr__(self) -> str:
-        return f"planar_arm_feedforward({self.terms!r}, payload_kg={self.payload_kg:g}{_arm_text(self.arm)})"
-
-    def __eq__(self, other: object) -> bool:
-        return isinstance(other, PlanarArmFeedforward) and (other.terms, other.payload_kg, other.arm) == (
-            self.terms,
-            self.payload_kg,
-            self.arm,
+        return (
+            f"planar_arm_feedforward({self.terms!r}, payload_kg={self.payload_kg:g}{_arm_text(self.arm)}"
+            f"{_error_text(self.model_error)})"
         )
 
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, PlanarArmFeedforward) and (
+            other.terms,
+            other.payload_kg,
+            other.arm,
+            other.model_error,
+        ) == (self.terms, self.payload_kg, self.arm, self.model_error)
+
     def __hash__(self) -> int:
-        return hash(("planar_arm_feedforward", self.terms, self.payload_kg, self.arm))
+        return hash(("planar_arm_feedforward", self.terms, self.payload_kg, self.arm, self.model_error))
 
 
 def planar_arm_feedforward(
-    terms: tuple[str, ...] = RIGID_BODY, arm: ArmConfig = ARM, payload_kg: float = 0.0
+    terms: tuple[str, ...] = RIGID_BODY,
+    arm: ArmConfig = ARM,
+    payload_kg: float = 0.0,
+    model_error: ModelError | None = None,
 ) -> PlanarArmFeedforward:
     """The planar arm's feed-forward for `terms` ⊆ {gravity, inertia, coriolis, viscous, coulomb}.
 
-    `payload_kg` is a payload on the tool the model is told about (0: the rungs' payload stays unknown).
+    `payload_kg` is a payload on the tool the model is told about (0: the rungs' payload stays unknown);
+    `model_error` how wrong the links and friction it was given are (§5.3; None = the nominal model).
     """
-    return PlanarArmFeedforward(tuple(terms), arm=arm, payload_kg=payload_kg)
+    return PlanarArmFeedforward(tuple(terms), arm=arm, payload_kg=payload_kg, model_error=model_error)
 
 
-def planar_arm_mass_matrix(arm: ArmConfig = ARM) -> PlanarArmMassMatrix:
-    """The planar arm's joint-space inertia M(q), armature included, no payload."""
-    return PlanarArmMassMatrix(arm)
+def planar_arm_mass_matrix(arm: ArmConfig = ARM, model_error: ModelError | None = None) -> PlanarArmMassMatrix:
+    """The planar arm's joint-space inertia M(q), armature included, no payload (with `model_error`'s links)."""
+    return PlanarArmMassMatrix(arm, model_error)
