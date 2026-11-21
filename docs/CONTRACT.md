@@ -701,6 +701,13 @@ registry. Planar and UR5e move onto it with no behaviour change: both acceptance
   - returns `Calibration(measured: BusTiming, nominal: BusTiming, delta_s: tuple, within: bool, method, why: str)`,
     `within` = every |delta| ≤ `tolerance_s`.
   WHY a routine and not only live: a clean run gives the delay at once; the monitor then only has to notice a change.
+- **Two numbers, not one (dispatcher, after lane A).** On a slow servo loop the joint's own friction-driven lag reads as
+  delay: UR5e wrists track best looking 10–14 ms ahead on a 5.5 ms bus. So a calibration reports both:
+  - **the bus delay** (`calibrate_bus(..., friction=True)`): what gets compared with the datasheet and watched by the
+    monitor, because the datasheet says nothing about friction;
+  - **the best lookahead** (the plain fit, the default): what the controller samples ahead by, because it tracks best
+    (UR5e 0.225° vs 0.338° at the true 5.5 ms).
+  The population's "calibrated" lookahead (§5.5) is the best lookahead; every grade row records both.
 - **The live monitor** (`monitor.py`: `LagMonitor(expected: BusTiming, *, lookahead_s=0.0, window_s=2.0, step_s=0.5,
   alert_s=0.002, confirm=2)`): pure and streaming. `update(t, q, sent_t, ref_position) -> list[LagEvent]` takes the new
   plant samples (t, q) and the new host ticks (sent_t, ref_position) since the last call. Every `step_s` it estimates each
