@@ -71,7 +71,10 @@ def test_the_base_scenario_is_the_rig_rate_a_datasheet_bus_and_a_ten_percent_mod
     assert base.model_error == ModelError(0.1)
     assert base.target == f"{arm_name}/path@nominal"
     assert base.bus.source.startswith("datasheet")
-    if len(base.bus.per_joint(1 if arm_name == "pendulum" else 2)) > 1:
+    from robot_controllers.bench.arms import arm
+
+    joints = len(arm(arm_name).joint_names)
+    if len(base.bus.per_joint(joints)) > 1:
         assert len(set(base.bus.command_delay_s)) > 1  # staggered: the boards are served in turn
     scenarios = grid(arm_name)
     assert scenarios[0] == base
