@@ -376,6 +376,17 @@ def recommend(
             "; its lookahead is the twin's calibrated best lookahead there shifted by your bus - measure yours "
             "with `robot-controllers calibrate`"
         )
+    # WHY said, not filtered (§5.5, §5.9): host-side feedback saturated the boards at 50 Hz in every earlier sim, so a
+    # real arm runs only REAL_SAFE; the twin's answer stays the answer, and the real-safe one is named beside it
+    from robot_controllers.bench.population import REAL_SAFE
+
+    if pick["config"] not in REAL_SAFE:
+        safe = next((r for r in fitting if r["config"] in REAL_SAFE), None)
+        why += (
+            f"; {pick['config']} is not real-safe (§5.5): on a real arm the best real-safe one here is "
+            + (f"{safe['config']} ({_metric_text(safe, names)})" if safe else "none (no REAL_SAFE config passes)")
+        )
+        evidence[0]["best_real_safe"] = None if safe is None else safe["config"]
     return Recommendation(
         controller=controller,
         config=pick["config"],
