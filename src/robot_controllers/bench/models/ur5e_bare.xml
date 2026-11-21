@@ -1,0 +1,45 @@
+<mujoco model="ur5e_bare">
+  <!-- Kinematics and inertials of the MuJoCo Menagerie UR5e, nothing else: no meshes, actuators, keyframes or contacts.
+       Joint armature / damping / frictionloss are 0 here; bam_pid_tunning's ArmSim sets them per joint from its truths. -->
+  <compiler angle="radian" autolimits="true"/>
+
+  <option timestep="0.00025" integrator="implicitfast"/>
+
+  <worldbody>
+    <body name="base" quat="0 0 0 -1">
+      <inertial mass="4.0" pos="0 0 0" diaginertia="0.00443333156 0.00443333156 0.0072"/>
+      <geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.163" contype="0" conaffinity="0" group="3"/>
+      <body name="shoulder_link" pos="0 0 0.163">
+        <inertial mass="3.7" pos="0 0 0" diaginertia="0.0102675 0.0102675 0.00666"/>
+        <joint name="shoulder_pan_joint" axis="0 0 1" range="-6.28319 6.28319" armature="0" damping="0" frictionloss="0"/>
+        <geom type="capsule" size="0.05" fromto="0 0 0 0 0.138 0" contype="0" conaffinity="0" group="3"/>
+        <body name="upper_arm_link" pos="0 0.138 0" quat="1 0 1 0">
+          <inertial mass="8.393" pos="0 0 0.2125" diaginertia="0.133886 0.133886 0.0151074"/>
+          <joint name="shoulder_lift_joint" axis="0 1 0" range="-6.28319 6.28319" armature="0" damping="0" frictionloss="0"/>
+          <geom type="capsule" size="0.05" fromto="0 0 0 0 -0.131 0.425" contype="0" conaffinity="0" group="3"/>
+          <body name="forearm_link" pos="0 -0.131 0.425">
+            <inertial mass="2.275" pos="0 0 0.196" diaginertia="0.0311796 0.0311796 0.004095"/>
+            <joint name="elbow_joint" axis="0 1 0" range="-3.1415 3.1415" armature="0" damping="0" frictionloss="0"/>
+            <geom type="capsule" size="0.04" fromto="0 0 0 0 0 0.392" contype="0" conaffinity="0" group="3"/>
+            <body name="wrist_1_link" pos="0 0 0.392" quat="1 0 1 0">
+              <inertial mass="1.219" pos="0 0.127 0" diaginertia="0.0025599 0.0025599 0.0021942"/>
+              <joint name="wrist_1_joint" axis="0 1 0" range="-6.28319 6.28319" armature="0" damping="0" frictionloss="0"/>
+              <geom type="capsule" size="0.04" fromto="0 0 0 0 0.127 0" contype="0" conaffinity="0" group="3"/>
+              <body name="wrist_2_link" pos="0 0.127 0">
+                <inertial mass="1.219" pos="0 0 0.1" diaginertia="0.0025599 0.0025599 0.0021942"/>
+                <joint name="wrist_2_joint" axis="0 0 1" range="-6.28319 6.28319" armature="0" damping="0" frictionloss="0"/>
+                <geom type="capsule" size="0.04" fromto="0 0 0 0 0 0.1" contype="0" conaffinity="0" group="3"/>
+                <body name="wrist_3_link" pos="0 0 0.1">
+                  <inertial mass="0.1889" pos="0 0.0771683 0" quat="1 0 0 1" diaginertia="0.000132134 9.90863e-05 9.90863e-05"/>
+                  <joint name="wrist_3_joint" axis="0 1 0" range="-6.28319 6.28319" armature="0" damping="0" frictionloss="0"/>
+                  <geom type="capsule" size="0.04" fromto="0 0 0 0 0.1 0" contype="0" conaffinity="0" group="3"/>
+                  <site name="tool" pos="0 0.1 0" quat="-1 1 0 0" size="0.01"/>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

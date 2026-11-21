@@ -59,8 +59,9 @@ def run_episode(
 ) -> EpisodeLog:
     """Run `spec`'s controller on `rung` and return everything that happened (see the module docstring).
 
-    `plant_factory` builds the plant (default `PlanarArmPlant()`); anything with
-    reset/read/write/advance/samples/ meta/events/joint_names/start_q works.
+    `plant_factory` builds the plant (default: the plant `rung.plant` names, `plant_for`); anything with
+    reset/read/write/advance/samples/ meta/events/joint_names/start_q works, and its `tool_position(q)` (when
+    it has one) turns the reference into `ref_tool_pos` (amendment 4, §4.5).
     """
     # WHY here: the contract times tick compute on one BLAS thread; this reaches BLAS libraries loaded after
     # it (numpy's own pool is fixed at import, so a runner should also export it before Python starts).
@@ -70,7 +71,7 @@ def run_episode(
     timing = rung.timing
     period = timing.period_s
     duration = float(rung.duration_s)
-    plant = plant_factory() if plant_factory is not None else PlanarArmPlant()
+    plant = plant_factory() if plant_factory is not None else plant_for(rung.plant)
     plant.reset(rung.scene, seed, timing=timing, duration_s=duration)
     joint_names = tuple(plant.joint_names)
     joint_count = len(joint_names)
@@ -236,7 +237,7 @@ def run_episode(
         cmd_max_effort=rows.array("cmd_max_effort"),
         ref_position=ref_position,
         ref_velocity=rows.array("ref_velocity") if has_reference else None,
-        ref_tool_pos=tool_position(ref_position) if has_reference else None,
+        ref_tool_pos=_tool_positions(plant, ref_position) if has_reference else None,
         status=np.array(rows.status, dtype="<U7"),
         input_index=np.array(rows.input_index, dtype=np.int64),
         t=samples["t"],
@@ -257,6 +258,23 @@ def run_episode(
         split_ff=rows.array("split_ff") if has_split else None,
         split_fb_host=rows.array("split_fb_host") if has_split else None,
     )
+
+
+def plant_for(name: str) -> Any:
+    """A fresh plant by `Rung.plant` name: `planar_arm` or `ur5e`."""
+    if name == "planar_arm":
+        return PlanarArmPlant()
+    if name == "ur5e":
+        from robot_controllers.bench.ur5e import Ur5ePlant
+
+        return Ur5ePlant()
+    raise ValueError(f"unknown plant {name!r}; known: planar_arm, ur5e")
+
+
+def _tool_positions(plant: Any, positions: np.ndarray) -> np.ndarray:
+    """The reference's tool path on the plant's own kinematics; a plant without them is the planar arm's."""
+    kinematics = getattr(plant, "tool_position", None)
+    return kinematics(positions) if callable(kinematics) else tool_position(positions)
 
 
 def _last_split(controller: Any) -> tuple[Any, Any] | None:

@@ -64,7 +64,7 @@ from robot_controllers.registry import JOINT_TRAJECTORY
 
 FEEDFORWARD_MODELS: tuple[str, ...] = ("trajectory", "none", "gravity", "rigid_body", "rigid_body_coulomb")
 FEEDBACK_MODELS: tuple[str, ...] = ("board_gains", "pd", "ctc")
-ARMS: tuple[str, ...] = ("planar_arm",)  # the plants a layout's model names resolve on
+ARMS: tuple[str, ...] = ("planar_arm", "ur5e")  # the plants a layout's model names resolve on (§4.5)
 SWEPT_RUNGS: tuple[str, ...] = (
     "R1.FreeSpace",
     "R2.FastFreeSpace",
@@ -122,10 +122,17 @@ def ctc_record(board: BoardConfig | None = None, arm: ArmConfig = ARM) -> dict[s
     }
 
 
-def feedforward_model(name: str) -> Any:
-    """The feed-forward function a sweep name stands for (None for `trajectory` and `none`: no model)."""
+def feedforward_model(name: str, arm: str = "planar_arm") -> Any:
+    """The feed-forward function a sweep name stands for on `arm` (None for `trajectory` and `none`: no
+    model)."""
     if name in ("trajectory", "none"):
         return None
+    if arm == "ur5e":
+        if name not in FEEDFORWARD_MODELS:
+            raise ValueError(f"unknown feed-forward model {name!r}; known: {FEEDFORWARD_MODELS}")
+        from robot_controllers.bench.ur5e import ur5e_feedforward
+
+        return ur5e_feedforward(name)
     if name == "gravity":
         return planar_arm_feedforward(("gravity",))
     if name == "rigid_body":
@@ -135,10 +142,20 @@ def feedforward_model(name: str) -> Any:
     raise ValueError(f"unknown feed-forward model {name!r}; known: {FEEDFORWARD_MODELS}")
 
 
-def feedback_model(name: str) -> Any:
-    """The feedback function a sweep name stands for (None for `board_gains`: the board's own gains)."""
+def feedback_model(name: str, arm: str = "planar_arm") -> Any:
+    """The feedback function a sweep name stands for on `arm` (None for `board_gains`: the board's own
+    gains)."""
     if name == "board_gains":
         return None
+    if arm == "ur5e":
+        from robot_controllers.bench.ur5e import ur5e_board_config, ur5e_ctc_bandwidth_hz, ur5e_mass_matrix
+
+        board = ur5e_board_config()
+        if name == "pd":
+            return PD(board.kp_nm_rad, board.kd_nm_s_rad)
+        if name == "ctc":
+            return InertiaScaledPD(ur5e_ctc_bandwidth_hz(), CTC_DAMPING_RATIO, ur5e_mass_matrix())
+        raise ValueError(f"unknown feedback model {name!r}; known: {FEEDBACK_MODELS}")
     board = BoardConfig()
     if name == "pd":
         return PD(board.kp_nm_rad, board.kd_nm_s_rad)
@@ -231,7 +248,7 @@ def layout_spec(
         raise ValueError(
             f"feedback {fb_model!r} cannot be placed at {fb_at!r}; it goes at {feedback_placements(fb_model)}"
         )
-    feedforward, feedback = feedforward_model(ff_model), feedback_model(fb_model)
+    feedforward, feedback = feedforward_model(ff_model, arm), feedback_model(fb_model, arm)
     layout = Layout(ff_at, fb_at, lookahead_s=lookahead_s, interpolation=interpolation)
     layout.check(feedforward, feedback)
     ff_text = {"trajectory": "the trajectory's own effort column", "none": "no feed-forward"}.get(
@@ -253,7 +270,8 @@ def layout_spec(
         + ("" if layout.interpolation == "tangent" else f" + {layout.interpolation}"),
         box=JOINT_TRAJECTORY,
         runs_on=_RUNS_ON[fb_at],
-        summary=f"The layout controller with {ff_text} and {fb_text}{ahead}.",
+        summary=f"The layout controller with {ff_text} and {fb_text}{ahead}"
+        + ("." if arm == "planar_arm" else f", on the {arm}."),
         target=f"{_LC}:LayoutController",
         config_target=f"{_LC}:LayoutConfig",
         prior_art=("robot_controllers layout_controller",),
