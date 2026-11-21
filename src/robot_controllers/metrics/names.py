@@ -19,9 +19,11 @@ from typing import Literal
 # WHY "decomposition" (amendment 3, 2026-11-20): how the commanded torque splits into feed-forward and
 # feedback is its own question ("low feedback torque, where most of it is coming from feedforward terms",
 # Zach 2026-11-11).
+# WHY "collision" (amendment 5, §5.6): how soon and how hard a hard stop is felt is its own question ("perhaps if
+# you want like to really optimize for less impact, or better collision detection", Zach 2026-11-20).
 Family = Literal[
     "tracking", "contact", "disturbance", "replanning", "timing", "health", "decomposition", "cost",
-    "sequence",
+    "sequence", "collision",
 ]
 Better = Literal["lower", "higher", "none"]
 
@@ -131,6 +133,17 @@ METRICS: tuple[MetricInfo, ...] = (
     _m("steps_total", "count", "sequence", "none", "Steps in the sequence."),
     _m("sequence_time_s", "s", "sequence", "lower", "Time until the sequence finished (done or aborted)."),
     _m("reached_error_deg", "deg", "sequence", "lower", "|target - position| when the last Reached fired, worst joint."),
+    # collision (amendment 5, §5.6; the collision target only): the residual is the feedback torque (board PD term + host
+    # feedback) per joint over its cap, low-passed at 50 Hz, max over joints; the threshold is 1.25 x the same config's
+    # largest residual on the same scenario without the stop (metrics.collision)
+    _m("collision_detect_ms", "ms", "collision", "lower",
+       "First contact with the hard stop -> the first sample whose residual crosses the threshold. None = never "
+       "detected (a fail)."),
+    _m("collision_peak_nm", "N·m", "collision", "lower",
+       "The stop's largest constraint torque from first contact until detection (the whole contact when never "
+       "detected): the impact."),
+    _m("collision_margin", "", "collision", "higher",
+       "Largest residual during contact / the threshold: how clearly the stop stands out from free motion."),
 )
 
 BY_NAME: dict[str, MetricInfo] = {m.name: m for m in METRICS}
@@ -139,7 +152,7 @@ if len(BY_NAME) != len(METRICS):
 
 FAMILIES: tuple[Family, ...] = (
     "tracking", "contact", "disturbance", "replanning", "timing", "health", "decomposition", "cost",
-    "sequence",
+    "sequence", "collision",
 )
 
 

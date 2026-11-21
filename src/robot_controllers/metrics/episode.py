@@ -18,7 +18,7 @@ from typing import Any
 import numpy as np
 
 from robot_controllers.bench.types import EpisodeLog, GateResult, Rung, RunResult, gate_rows, judge
-from robot_controllers.metrics import contact, cost, decomposition, health, lag, sequence, timing, tracking
+from robot_controllers.metrics import collision, contact, cost, decomposition, health, lag, sequence, timing, tracking
 from robot_controllers.metrics.names import BY_NAME, METRICS
 
 Metrics = dict[str, float | int | None]
@@ -33,12 +33,15 @@ TRACE_SIGNIFICANT_DIGITS = 4
 # ── metrics ─────────────────────────────────────────────────────────────────────────────────────────────────
 
 
-def episode_metrics(log: EpisodeLog, rung: Rung) -> Metrics:
-    """Every metric in names.METRICS for one episode (None = not measured)."""
-    return episode_metrics_and_notes(log, rung)[0]
+def episode_metrics(log: EpisodeLog, rung: Rung, *, free: EpisodeLog | None = None) -> Metrics:
+    """Every metric in names.METRICS for one episode (None = not measured). `free` is the same controller's run of
+    the same scenario without its hard stop: the collision metrics' threshold (amendment 5, §5.6)."""
+    return episode_metrics_and_notes(log, rung, free=free)[0]
 
 
-def episode_metrics_and_notes(log: EpisodeLog, rung: Rung) -> tuple[Metrics, dict[str, str]]:
+def episode_metrics_and_notes(
+    log: EpisodeLog, rung: Rung, *, free: EpisodeLog | None = None
+) -> tuple[Metrics, dict[str, str]]:
     """(metrics, notes): notes say why a metric is None, or qualify a number a gate will judge."""
     metrics: Metrics = {m.name: None for m in METRICS}
     notes: dict[str, str] = {}
@@ -192,6 +195,16 @@ def episode_metrics_and_notes(log: EpisodeLog, rung: Rung) -> tuple[Metrics, dic
     else:
         for name in ("fb_share_pct", "fb_share_lf_pct", "fb_rms_nm", "ff_rms_nm"):
             note(name, "not measured: the log has no board torque split")
+
+    # collision (amendment 5, §5.6): a run with a hard stop, against the same controller's free run
+    if rung.scene.stops or log.tau_stop is not None:
+        values, collision_notes = collision.collision_metrics(log, free)
+        metrics.update(values)
+        for name, text in collision_notes.items():
+            note(name, text)
+    else:
+        for name in collision.NAMES:
+            note(name, "not measured: no hard stop on this rung")
 
     # cost
     metrics.update(cost.compute_metrics(log.compute_s))
@@ -363,10 +376,11 @@ def evaluate(
     return results
 
 
-def run_result(log: EpisodeLog, rung: Rung, *, trace: bool = True) -> RunResult:
+def run_result(log: EpisodeLog, rung: Rung, *, trace: bool = True, free: EpisodeLog | None = None) -> RunResult:
     """The scored run: metrics, gate rows, passed (every gate), objective = metrics[rung.objective], the trace
-    (CONTRACT §5) and the episode's events, all JSON-safe. The rung id comes from `rung`, not the log."""
-    metrics, notes = episode_metrics_and_notes(log, rung)
+    (CONTRACT §5) and the episode's events, all JSON-safe. The rung id comes from `rung`, not the log. `free`: as
+    `episode_metrics`."""
+    metrics, notes = episode_metrics_and_notes(log, rung, free=free)
     if rung.objective not in BY_NAME:
         raise KeyError(f"rung {rung.id}: objective {rung.objective!r} is not a metric")
     gate_results = evaluate(rung, metrics, notes)
