@@ -39,7 +39,7 @@ def _bam_pid_tunning():
 def _poses(count=12, seed=5):
     """Drive poses about home and along dev000 (where the targets go)."""
     rng = np.random.default_rng(seed)
-    _, q, _, _ = resample(load_tape("bam_fb/workspace-dev-000.npz"))
+    _, q, _, _ = resample(load_tape(fb.PATH_TAPE))
     about_home = HOME + rng.uniform(-np.radians(8.0), np.radians(8.0), size=(count, 6))
     return np.vstack([about_home, q[:: max(1, len(q) // count)]])
 
@@ -114,13 +114,12 @@ def test_the_plant_starts_closed_and_its_soft_loop_stays_within_microns_along_de
     from robot_controllers.bench.layouts import layout_spec
     from robot_controllers.bench.loop import run_episode
 
-    rung = fb.path_rung("fast")
+    rung = TARGETS()["bam_fivebar/path@fast"].rung()
     log = run_episode(
-        layout_spec("trajectory", "trajectory", "board_gains", "board"), rung, plant_factory=fb.FivebarPlant
+        layout_spec("trajectory", "trajectory", "board_gains", "board", arm="bam_fivebar"), rung
     )
-    assert (
-        log.meta["loop_gap_max_m"] < 2e-4
-    )  # ArmSim's stiffened closure: ~10 um through its move; dev000 at full speed
+    # ArmSim's stiffened closure: ~10 um through its move; here the whole of dev000 at its fastest
+    assert log.meta["loop_gap_max_m"] < 2e-4
     assert not any(e["kind"] == "diverged" for e in log.events)
     np.testing.assert_allclose(log.q[0], rung.scene.start_q, atol=1e-3)
 
@@ -258,57 +257,107 @@ def test_the_plant_refuses_a_belt_and_pushes_and_carries_a_payload_at_the_tool()
 # ── the targets ───────────────────────────────────────────────────────────────────────────────────────────
 
 
-def test_the_path_rungs_are_dev000_at_three_speeds_from_the_station_home():
-    rungs = fb.fivebar_rungs()
-    assert sorted(rungs) == sorted(
-        [*(f"bam_fivebar/path@{s}" for s in ("slow", "nominal", "fast")), "bam_fivebar/calibration"]
+def TARGETS():
+    return {t.id: t for t in fb.fivebar_targets()}
+
+
+def test_the_targets_are_dev000_at_0_5_time_scaled_from_the_station_home():
+    from robot_controllers.bench.targets import SPEED_TIME_SCALES
+
+    targets = TARGETS()
+    assert sorted(targets) == sorted(
+        f"bam_fivebar/{s}" for s in ("path@slow", "path@nominal", "path@fast", "calibration", "collision")
     )
+    tape = load_tape(fb.PATH_TAPE)
+    t, q, qd, qdd = resample(tape)
+    caps = np.asarray(fb.FIVEBAR_TRUTH.torque_cap_nm)
     peaks = []
-    for speed, fraction in fb.SPEEDS.items():
-        rung = rungs[f"bam_fivebar/path@{speed}"]
-        assert rung.plant == "bam_fivebar" and rung.timing.rate_hz == 100.0
-        np.testing.assert_allclose(rung.scene.start_q, fb.STATION_HOME_Q, atol=1e-12)
-        trajectory = rung.inputs(np.asarray(rung.scene.start_q))[0][1]
-        tape = load_tape(fb.TAPES[fraction])
-        assert trajectory.t[-1] == pytest.approx(float(tape.t[-1]))
-        assert rung.duration_s == pytest.approx(float(tape.t[-1]) + 0.6)
+    for speed in ("slow", "nominal", "fast"):
+        rung = targets[f"bam_fivebar/path@{speed}"].rung()
+        k = SPEED_TIME_SCALES[speed]
+        assert rung.plant == "bam_fivebar" and rung.timing.rate_hz == 100.0 and rung.gates
+        np.testing.assert_allclose(rung.scene.start_q, fb.STATION_HOME_Q, atol=1e-12)  # the tape's start
+        trajectory = rung.inputs(np.asarray(fb.FIVEBAR_HOME_Q))[0][1]
+        np.testing.assert_allclose(trajectory.t, t * k, atol=1e-12)
+        np.testing.assert_array_equal(trajectory.positions, q)
+        np.testing.assert_allclose(trajectory.velocities, qd / k, atol=1e-12)
         np.testing.assert_allclose(
             trajectory.effort,
-            fb.fivebar_feedforward("rigid_body")(
-                trajectory.positions, trajectory.velocities, trajectory.accelerations
-            ),
-            atol=1e-12,
+            fb.fivebar_feedforward("rigid_body")(q, qd / k, qdd / k**2),
+            atol=1e-9,
         )
+        # the feed-forward even the fast path asks for stays under every drive's cap
+        assert np.all(np.abs(trajectory.effort) < caps), (speed, np.abs(trajectory.effort).max(0) / caps)
         peaks.append(rung.params["peak_joint_speed_deg_s"])
-        assert rung.params["tape_sha256"] == tape_record(fb.TAPES[fraction])["sha256"]
     assert peaks[0] < peaks[1] < peaks[2]
-    assert pickle.loads(pickle.dumps(rungs["bam_fivebar/path@nominal"])).id == "bam_fivebar/path@nominal"
+    # path@nominal is the tape the real showcase ran, sample for sample on its own 10 ms grid
+    nominal = targets["bam_fivebar/path@nominal"].rung().inputs(np.zeros(6))[0][1]
+    np.testing.assert_allclose(nominal.positions[::5], np.asarray(tape.positions)[::2], atol=1e-12)
+    assert tape_record(fb.PATH_TAPE)["speed_fraction"] == 0.5
+    assert (
+        pickle.loads(pickle.dumps(targets["bam_fivebar/path@nominal"].rung())).id
+        == "bam_fivebar/path@nominal"
+    )
 
 
 def test_the_calibration_sweep_moves_every_drive_at_least_5_degrees_on_a_closable_loop():
-    rung = fb.calibration_rung()
-    trajectory = rung.inputs(np.asarray(rung.scene.start_q))[0][1]
+    rung = TARGETS()["bam_fivebar/calibration"].rung()
+    assert rung.scene.start_q is None  # it sweeps about home, where the plant starts
+    trajectory = rung.inputs(np.asarray(fb.FIVEBAR_HOME_Q))[0][1]
     q = np.asarray(trajectory.positions)
     assert np.all(np.degrees(q.max(0) - q.min(0)) >= 5.0)
-    np.testing.assert_allclose(q[0], fb.FIVEBAR_HOME_Q, atol=1e-12)
-    np.testing.assert_allclose(q[-1], fb.FIVEBAR_HOME_Q, atol=1e-12)
     chain = fb._Chain(fb.load_model(nominal=True))
     for row in q[::25]:
         chain.close(row)  # raises where the loop cannot close on the working assembly
-    gravity = fb.fivebar_feedforward("rigid_body")(
-        q[::25], np.asarray(trajectory.velocities)[::25], np.asarray(trajectory.accelerations)[::25]
+    effort = np.asarray(trajectory.effort)
+    assert np.all(np.abs(effort) < 0.75 * np.asarray(fb.FIVEBAR_TRUTH.torque_cap_nm))
+
+
+def test_the_collision_stop_is_felt_on_the_most_moving_drive_half_way_along_its_travel():
+    from robot_controllers.bench.layouts import layout_spec
+    from robot_controllers.bench.loop import run_episode
+
+    rung = TARGETS()["bam_fivebar/collision"].rung()
+    ((joint, angle, side),) = rung.scene.stops
+    q = np.asarray(rung.inputs(np.zeros(6))[0][1].positions)
+    assert (
+        joint == int(np.argmax(np.ptp(q, axis=0))) and fb.FIVEBAR_JOINTS[joint] == rung.params["stop_joint"]
     )
-    assert np.all(np.abs(gravity) < 0.75 * np.asarray(fb.FIVEBAR_TRUTH.torque_cap_nm))
+    assert angle == pytest.approx(0.5 * (q[:, joint].min() + q[:, joint].max()))
+    assert side == ("upper" if fb.STATION_HOME_Q[joint] < angle else "lower")
+    log = run_episode(
+        layout_spec("trajectory", "trajectory", "board_gains", "board", arm="bam_fivebar"), rung
+    )
+    touches = [e for e in log.events if e["kind"] == "stop_touch"]
+    assert touches and touches[0]["joint"] == fb.FIVEBAR_JOINTS[joint]
+    assert np.max(np.abs(log.tau_stop[:, joint])) > 0.1
+    beyond = log.q[:, joint] - angle if side == "upper" else angle - log.q[:, joint]
+    assert np.max(beyond) < np.radians(1.0)  # a stiff wall: the drive stops at it
+
+
+def test_a_hold_binds_to_the_rungs_arm_and_the_planar_hold_is_unchanged():
+    from robot_controllers.bench.rungs import HoldScript, _joint_quintic_trajectory
+
+    hold = HoldScript(0.5)
+    assert hold.for_arm("planar_arm") is hold
+    start = np.array([0.3, -0.4])
+    planar = hold(start)[0][1]
+    reference = _joint_quintic_trajectory(start, 0 * start, 0 * start, start, 0.5)
+    np.testing.assert_array_equal(planar.effort, reference.effort)
+    assert planar.joint_names == reference.joint_names
+    held = hold.for_arm("bam_fivebar")(HOME)[0][1]
+    assert held.joint_names == fb.FIVEBAR_JOINTS
+    np.testing.assert_allclose(
+        held.effort[0], fb.fivebar_feedforward("gravity")(HOME, 0 * HOME, 0 * HOME), atol=1e-9
+    )
 
 
 def test_the_arm_registers_itself():
-    pytest.importorskip(
-        "robot_controllers.bench.arm_planar", reason="the registry's planar module lands with lane A"
-    )
-    from robot_controllers.bench.arms import arm
+    from robot_controllers.bench.arms import arm, arms
 
     spec = arm("bam_fivebar")
     assert spec is fb.SPEC and spec.joint_names == fb.FIVEBAR_JOINTS and spec.real_station == "bam_fb"
+    assert [a.name for a in arms()][2] == "bam_fivebar"
     assert isinstance(spec.plant(), fb.FivebarPlant)
     assert spec.feedforward("gravity", None) == fb.fivebar_feedforward("gravity")
     np.testing.assert_allclose(spec.tool_position(HOME), fb.tool_position(HOME))

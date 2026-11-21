@@ -1,21 +1,25 @@
-"""Fixed target trajectories for the vendored arms (CONTRACT amendment 5, §5.4 / §5.8): arm_motion_bench's
-frozen tapes resampled onto the bench's grid, and the smooth sine sweep the calibration target runs.
+"""Fixed targets for the vendored arms (CONTRACT amendment 5, §5.4 / §5.8): arm_motion_bench's frozen tapes
+resampled onto the bench's grid, and the arm's five targets built from one of them by `bench.targets`.
 
-    from robot_controllers.bench.arm_tapes import load_tape, resample, sine_sweep
+    from robot_controllers.bench.arm_tapes import TapeScript, load_tape, resample, tape_targets
     tape = load_tape("bam_fb/workspace-dev-000__s0.5.npz")          # the 100 Hz JointTrajectory, as frozen
     t, q, qd, qdd = resample(tape, 0.004)                           # every 4 ms, the end included
+    targets = tape_targets("bam_fivebar", TapeScript("bam_fb/workspace-dev-000__s0.5.npz", "bam_fivebar"),
+    ...)
 
 - **The tapes** live in `models/tapes/<robot>/`, copied byte for byte from arm_motion_bench's
   `outputs/datasets/<robot>/workspace/v2/tapes/` (`models/tapes/tapes.json` has each one's source path and
-  sha256, which equals its dataset manifest's entry; `tape_record` checks it on load).
+  sha256, which equals its dataset manifest's entry; `load_tape` refuses any other bytes).
 - **Resampling** is quintic Hermite through each 10 ms interval's end samples (position, velocity and
   acceleration). WHY quintic Hermite: the tapes are bam_ruckig profiles, piecewise constant jerk, so position
   is a cubic inside every interval that holds no jerk switch, and the quintic through a cubic's end values is
   that cubic. The bench's 4 ms samples then lie on the curve the real arm was sent (it plays the same tape),
   so a real log of the tape compares one to one; linear interpolation would cut the corners by up to a·h²/8.
-- **The sweep**: every joint `home_j + A · sin²(π t / T) · sin(2π f_j t)`, distinct f_j, so all joints move at
-  once, uncorrelated, starting and ending at rest with zero acceleration (the sin² window's value and slope
-  are 0 at both ends).
+- **The targets** are `bench.targets.arm_targets` on the tape (the path time-scaled ×2.0 / ×1.0 / ×0.9, lane
+  A's sine sweep around home, the collision stop), with one change: a path or collision run starts where the
+  tape starts (`Scene.start_q`), not at the arm's home, and the collision stop's side is taken from that
+  start. WHY: arm_motion_bench's tapes start where its tour put the arm (the five-bar's station home, the
+  pendulum's task 006 end), and a jump from home to the tape's first sample would be a step no real run has.
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ import functools
 import hashlib
 import json
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -149,53 +153,77 @@ def tape_trajectory(name: str, effort: Callable[[np.ndarray, np.ndarray, np.ndar
     )
 
 
-def sine_sweep(
-    home_q: Sequence[float],
-    *,
-    amplitude_rad: float | Sequence[float],
-    duration_s: float,
-    frequencies_hz: Sequence[float],
-    period_s: float = SAMPLE_PERIOD_S,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """(t, q, qd, qdd): every joint `home_j + A_j · sin²(π t / T) · sin(2π f_j t)` over [0, T], analytic
-    derivatives, every `period_s`, the end included. At rest with zero acceleration at both ends."""
-    home = np.asarray(home_q, dtype=float)
-    joints = len(home)
-    amplitude = np.broadcast_to(np.asarray(amplitude_rad, dtype=float), (joints,))
-    frequency = np.asarray(frequencies_hz, dtype=float)
-    if frequency.shape != (joints,):
-        raise ValueError(f"one frequency per joint: {joints} joints, {frequency.shape} frequencies")
-    count = int(round(duration_s / period_s))
-    t = np.arange(count + 1) * period_s
-    t[-1] = duration_s
-    window_rate = math.pi / duration_s
-    w = np.sin(window_rate * t) ** 2
-    dw = window_rate * np.sin(2.0 * window_rate * t)
-    ddw = 2.0 * window_rate**2 * np.cos(2.0 * window_rate * t)
-    omega = 2.0 * math.pi * frequency
-    phase = np.outer(t, omega)
-    s, c = np.sin(phase), np.cos(phase)
-    q = home + amplitude * w[:, None] * s
-    qd = amplitude * (dw[:, None] * s + w[:, None] * omega * c)
-    qdd = amplitude * (ddw[:, None] * s + 2.0 * dw[:, None] * omega * c - w[:, None] * omega**2 * s)
-    return t, q, qd, qdd
+@functools.lru_cache(maxsize=16)
+def _tape_trajectory(name: str, arm: str) -> Any:
+    from robot_controllers.bench.arms import arm as registered
+
+    return tape_trajectory(name, registered(arm).feedforward("rigid_body", None))
 
 
 @dataclass(frozen=True)
-class TrajectoryScript:
-    """One JointTrajectory at t = 0, built by `build()` (a module-level, cached function of plain values), so
-    a rung pickles into a worker process. `duration_s` is the trajectory's own."""
+class TapeScript:
+    """One JointTrajectory at t = 0: vendored tape `tape` on the 4 ms grid, effort = `arm`'s nominal
+    `rigid_body` model. It starts where the tape does, whatever start it is handed. Frozen and compared by
+    value, so a rung pickles into a worker process and `bench.targets` caches its time-scaled copies."""
 
-    build: Callable[[], Any]
-    duration_s: float
+    tape: str
+    arm: str
 
     def __call__(self, start_q: np.ndarray) -> list[tuple[float, Any]]:
-        return [(0.0, self.build())]
+        return [(0.0, _tape_trajectory(self.tape, self.arm))]
+
+    @property
+    def duration_s(self) -> float:
+        times = np.asarray(load_tape(self.tape).t, dtype=float)
+        return float(times[-1] - times[0])
+
+    @property
+    def start_q(self) -> tuple[float, ...]:
+        return tuple(float(v) for v in np.asarray(load_tape(self.tape).positions, dtype=float)[0])
 
 
-def most_moving_joint(positions: np.ndarray) -> tuple[int, float, float]:
-    """(joint index, min, max) of the joint whose travel max - min (rad) is largest along `positions`."""
-    positions = np.asarray(positions, dtype=float)
-    travel = positions.max(axis=0) - positions.min(axis=0)
-    joint = int(np.argmax(travel))
-    return joint, float(positions[:, joint].min()), float(positions[:, joint].max())
+@dataclass(frozen=True)
+class FromTapeStart:
+    """A target's rung builder (`bench.targets.TargetRung`) whose plant starts at the path's first sample, the
+    collision stop's side taken from there (`collision_stop` with that start)."""
+
+    inner: Any
+
+    def __call__(self) -> Any:
+        import dataclasses
+
+        from robot_controllers.bench.arms import arm as registered
+        from robot_controllers.bench.targets import collision_stop
+
+        rung = self.inner()
+        trajectory = rung.inputs(np.asarray(registered(rung.plant).home_q, dtype=float))[0][1]
+        start = tuple(float(v) for v in np.asarray(trajectory.positions, dtype=float)[0])
+        scene = dataclasses.replace(rung.scene, start_q=start)
+        params = {**rung.params, "start_q_rad": "(" + ", ".join(f"{v:.6g}" for v in start) + ")"}
+        if rung.scene.stops:
+            joint, angle, side = collision_stop(trajectory, start)
+            scene = dataclasses.replace(scene, stops=((joint, angle, side),))
+            params.update(
+                {
+                    "stop_joint": registered(rung.plant).joint_names[joint],
+                    "stop_joint_index": joint,
+                    "stop_angle_rad": angle,
+                    "stop_side": side,
+                }
+            )
+        return dataclasses.replace(rung, scene=scene, params=params)
+
+
+def tape_targets(arm: str, path: TapeScript, *, gates: tuple, timing: Any = None, path_text: str) -> tuple:
+    """`arm`'s five fixed targets (`bench.targets.arm_targets`) on tape script `path`, the path and collision
+    runs starting where the tape does."""
+    import dataclasses
+
+    from robot_controllers.bench.targets import arm_targets
+
+    out = []
+    for target in arm_targets(arm, path, gates=gates, timing=timing, path_text=path_text):
+        if target.kind in ("path", "collision"):
+            target = dataclasses.replace(target, build=FromTapeStart(target.build))
+        out.append(target)
+    return tuple(out)

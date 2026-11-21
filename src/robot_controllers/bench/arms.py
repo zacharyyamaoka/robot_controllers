@@ -21,6 +21,8 @@ from robot_controllers.models import FeedforwardModel, ModelError
 ARM_MODULES: tuple[tuple[str, str], ...] = (
     ("planar_arm", "robot_controllers.bench.arm_planar"),
     ("ur5e", "robot_controllers.bench.ur5e"),
+    ("bam_fivebar", "robot_controllers.bench.fivebar"),
+    ("pendulum", "robot_controllers.bench.pendulum"),
 )
 
 

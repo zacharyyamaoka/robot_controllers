@@ -4,19 +4,6 @@
   "copied": "2026-11-20",
   "tapes": [
     {
-      "file": "tapes/bam_fb/workspace-dev-000.npz",
-      "robot": "bam_fb",
-      "task": "workspace-dev-000",
-      "speed_fraction": 1.0,
-      "sha256": "8ba845960da38f99d1cd417a399e2c382f959a38ff08a56001bfebb0a15312d8",
-      "source": "/home/bam/arm_motion_bench/outputs/datasets/bam_fb/workspace/v2/tapes/workspace-dev-000.npz",
-      "manifest": "/home/bam/arm_motion_bench/datasets/bam_fb/workspace/v2/manifest.json",
-      "manifest_created": "2026-11-20T12:34:40-07:00",
-      "manifest_generator_git_sha": "d438b25cfa78e5565b5316023e112351490ed5ba",
-      "manifest_tasks_sha256": "6b34c27d74e3b76ee2762e3f1ed455e5b88b1d46d716b2e97eb5d875971f1cff",
-      "why": "the BAM FB workspace v2 dev000 path (ISO 9283 line + rectangle); the real showcase ran it at rung 0.5 (scripts/bam_fb_real_showcase.py)"
-    },
-    {
       "file": "tapes/bam_fb/workspace-dev-000__s0.5.npz",
       "robot": "bam_fb",
       "task": "workspace-dev-000",
@@ -27,33 +14,7 @@
       "manifest_created": "2026-11-20T12:34:40-07:00",
       "manifest_generator_git_sha": "d438b25cfa78e5565b5316023e112351490ed5ba",
       "manifest_tasks_sha256": "6b34c27d74e3b76ee2762e3f1ed455e5b88b1d46d716b2e97eb5d875971f1cff",
-      "why": "the BAM FB workspace v2 dev000 path (ISO 9283 line + rectangle); the real showcase ran it at rung 0.5 (scripts/bam_fb_real_showcase.py)"
-    },
-    {
-      "file": "tapes/bam_fb/workspace-dev-000__s0.25.npz",
-      "robot": "bam_fb",
-      "task": "workspace-dev-000",
-      "speed_fraction": 0.25,
-      "sha256": "d81d71cd4fe5c6da5b19687f56c669bbefbf5395993e48dd12ea04837e707a78",
-      "source": "/home/bam/arm_motion_bench/outputs/datasets/bam_fb/workspace/v2/tapes/workspace-dev-000__s0.25.npz",
-      "manifest": "/home/bam/arm_motion_bench/datasets/bam_fb/workspace/v2/manifest.json",
-      "manifest_created": "2026-11-20T12:34:40-07:00",
-      "manifest_generator_git_sha": "d438b25cfa78e5565b5316023e112351490ed5ba",
-      "manifest_tasks_sha256": "6b34c27d74e3b76ee2762e3f1ed455e5b88b1d46d716b2e97eb5d875971f1cff",
-      "why": "the BAM FB workspace v2 dev000 path (ISO 9283 line + rectangle); the real showcase ran it at rung 0.5 (scripts/bam_fb_real_showcase.py)"
-    },
-    {
-      "file": "tapes/pendulum/workspace-dev-007.npz",
-      "robot": "pendulum",
-      "task": "workspace-dev-007",
-      "speed_fraction": 1.0,
-      "sha256": "4c8f1f619c8a8966e2bf182d916ed04ee0ecd92b2edb2397a8d9dfffd7c3835f",
-      "source": "/home/bam/arm_motion_bench/outputs/datasets/pendulum/workspace/v2/tapes/workspace-dev-007.npz",
-      "manifest": "/home/bam/arm_motion_bench/datasets/pendulum/workspace/v2/manifest.json",
-      "manifest_created": "2026-11-20T13:14:58-07:00",
-      "manifest_generator_git_sha": "8737e4432700e3e16ea0ad434da46295fce56605",
-      "manifest_tasks_sha256": "3ae4d3fd69dd297d21ba36a006c5ed184a49ba30cf2e7a3a5aa75fdcf235a428",
-      "why": "the pendulum v2 dev tour's task 007 (a 138 deg, 63 cm swing), which the real showcase played at 0.5 (scripts/pendulum_showcase.py SEGMENTS)"
+      "why": "the BAM FB workspace v2 dev000 path (ISO 9283 line + rectangle); the real showcase ran it at rung 0.5 (scripts/bam_fb_real_showcase.py); the targets' base path (path@nominal), time-scaled x2.0 / x0.9 for slow / fast by bench.targets"
     },
     {
       "file": "tapes/pendulum/workspace-dev-007__s0.5.npz",
@@ -66,20 +27,7 @@
       "manifest_created": "2026-11-20T13:14:58-07:00",
       "manifest_generator_git_sha": "8737e4432700e3e16ea0ad434da46295fce56605",
       "manifest_tasks_sha256": "3ae4d3fd69dd297d21ba36a006c5ed184a49ba30cf2e7a3a5aa75fdcf235a428",
-      "why": "the pendulum v2 dev tour's task 007 (a 138 deg, 63 cm swing), which the real showcase played at 0.5 (scripts/pendulum_showcase.py SEGMENTS)"
-    },
-    {
-      "file": "tapes/pendulum/workspace-dev-007__s0.25.npz",
-      "robot": "pendulum",
-      "task": "workspace-dev-007",
-      "speed_fraction": 0.25,
-      "sha256": "f5761e72ad4d127a2272e95384ea4251a9cb8f6149cba73523b584c7dbc28af0",
-      "source": "/home/bam/arm_motion_bench/outputs/datasets/pendulum/workspace/v2/tapes/workspace-dev-007__s0.25.npz",
-      "manifest": "/home/bam/arm_motion_bench/datasets/pendulum/workspace/v2/manifest.json",
-      "manifest_created": "2026-11-20T13:14:58-07:00",
-      "manifest_generator_git_sha": "8737e4432700e3e16ea0ad434da46295fce56605",
-      "manifest_tasks_sha256": "3ae4d3fd69dd297d21ba36a006c5ed184a49ba30cf2e7a3a5aa75fdcf235a428",
-      "why": "the pendulum v2 dev tour's task 007 (a 138 deg, 63 cm swing), which the real showcase played at 0.5 (scripts/pendulum_showcase.py SEGMENTS)"
+      "why": "the pendulum v2 dev tour's task 007 (a 138 deg, 63 cm swing), which the real showcase played at 0.5 (scripts/pendulum_showcase.py SEGMENTS); the targets' base path (path@nominal), time-scaled x2.0 / x0.9 for slow / fast by bench.targets"
     }
   ]
 }

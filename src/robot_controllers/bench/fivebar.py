@@ -1,9 +1,10 @@
 """BAM's five-bar arm (bam_fb_v2) as a twin: a closed-chain MuJoCo plant behind the moteus board model, its
 closed-chain models and its fixed targets (CONTRACT amendment 5, §5.8).
 
-    from robot_controllers.bench.fivebar import FivebarPlant, fivebar_feedforward, fivebar_rungs
+    from robot_controllers.bench.fivebar import fivebar_feedforward, fivebar_targets
     ff = fivebar_feedforward("rigid_body")       # (6,) -> (6,), (N, 6) -> (N, 6): the six drives' torques
-    log = run_episode(spec, fivebar_rungs()["bam_fivebar/path@nominal"], plant_factory=FivebarPlant)
+    targets = {t.id: t for t in fivebar_targets()}   # path@slow|nominal|fast, calibration, collision
+    log = run_episode(layout_spec(..., arm="bam_fivebar"), targets["bam_fivebar/path@nominal"].rung())
 
 Zach, 2026-11-20: "we want to test in SIM so you can baseline in UR5e to start. and then we want to do on like
 bam 5bar Sim and real".
@@ -58,7 +59,7 @@ import numpy as np
 from robot_controllers.bench.arms import ArmSpec, register
 from robot_controllers.bench.board import BoardConfig
 from robot_controllers.bench.plant import PREROLL_S, TIME_TOLERANCE_S, ServoPlant
-from robot_controllers.bench.types import HostTiming, Rung, Scene
+from robot_controllers.bench.types import HostTiming, Scene
 from robot_controllers.models import ModelError
 
 ARM_NAME = "bam_fivebar"
@@ -665,13 +666,17 @@ class FivebarPlant(ServoPlant):
         self.timing = timing or HostTiming()
         self._reset_bus(seed, self.timing)
         self.contact_calibration = None
-        self._model = model = _plant_model(float(scene.payload_kg), self.truth)
-        self._data = data = mujoco.MjData(model)
-        self._chain = chain = _Chain(model)
-        self._act = chain.act
+        model = _plant_model(float(scene.payload_kg), self.truth)
         start_q = np.asarray(scene.start_q if scene.start_q is not None else self.home_q, dtype=float)
         if start_q.shape != (len(self.joint_names),):
             raise ValueError(f"start_q must be {len(self.joint_names)} drive angles, got {start_q}")
+        # the scene's hard stops (Scene.stops) as joint-range limits on a private copy
+        # (ServoPlant._stopped_model)
+        joint_ids = [model.joint(name).id for name in MJCF_JOINTS]
+        self._model = model = self._stopped_model(model, scene, joint_ids, start_q)
+        self._data = data = mujoco.MjData(model)
+        self._chain = chain = _Chain(model)
+        self._act = chain.act
         self.start_q = tuple(float(v) for v in start_q)
         data.qpos[:] = chain.close(start_q)
         data.qvel[:] = 0.0
@@ -704,6 +709,7 @@ class FivebarPlant(ServoPlant):
             data.efc_pos,
         )
         act_list = act.tolist()
+        stops = bool(self._stops)
         first_k = self._first_k
         k = self._k
         gap = self._loop_gap_max
@@ -717,6 +723,8 @@ class FivebarPlant(ServoPlant):
             for index, value in zip(act_list, tau, strict=True):
                 qfrc[index] = value
             mujoco.mj_step(model, data)
+            if stops:
+                self._record_stops(k, t)
             # the equality rows come first in efc: the connect's 3 position errors at the step's state
             if data.ne:
                 gap = max(gap, float(np.linalg.norm(efc_pos[: data.ne])))
@@ -761,132 +769,30 @@ class FivebarPlant(ServoPlant):
 
 # ── the targets ────────────────────────────────────────────────────────────────────────────────────────────
 
-# WHY 0.5 nominal: the speed the real showcase ran dev000 at (arm_motion_bench
+# WHY dev000 at 0.5 as the base (nominal) path: the speed the real showcase ran dev000 at (arm_motion_bench
 # scripts/bam_fb_real_showcase.py: the rung with the lowest moving RMS and stop error that ends at READY F),
-# so a real log of the same tape compares one to one.
-SPEEDS: dict[str, float] = {"slow": 0.25, "nominal": 0.5, "fast": 1.0}
-TAPES: dict[float, str] = {
-    1.0: "bam_fb/workspace-dev-000.npz",
-    0.5: "bam_fb/workspace-dev-000__s0.5.npz",
-    0.25: "bam_fb/workspace-dev-000__s0.25.npz",
-}
-CALIBRATION_AMPLITUDE_RAD = math.radians(8.0)  # every drive sweeps +-8 deg (>= 5 deg peak to peak, §5.4)
-CALIBRATION_DURATION_S = 4.0
-CALIBRATION_FREQUENCIES_HZ = (0.5, 0.75, 1.0, 1.25, 1.5, 1.75)  # distinct, so no two drives move in step
-PAD_S = 0.6  # each rung runs 0.6 s past its script (as R1 / R2)
-
-
-@functools.lru_cache(maxsize=8)
-def path_trajectory(speed: float) -> Any:
-    """dev000 at speed fraction `speed` (0.25, 0.5 or 1.0) on the 4 ms grid, effort = nominal `rigid_body`."""
-    from robot_controllers.bench.arm_tapes import tape_trajectory
-
-    return tape_trajectory(TAPES[float(speed)], FivebarFeedforward("rigid_body"))
+# so a real log of the same tape compares one to one with path@nominal; slow and fast are lane A's x2.0 / x0.9
+# time scales of it.
+PATH_TAPE = "bam_fb/workspace-dev-000__s0.5.npz"
 
 
 @functools.lru_cache(maxsize=1)
-def calibration_trajectory() -> Any:
-    """Every drive swept +-8 deg about home at once (distinct frequencies), at rest at both ends; effort =
-    rigid_body."""
-    from robot_msgs.trajectory import JointTrajectory
-
-    from robot_controllers.bench.arm_tapes import sine_sweep
-
-    t, q, qd, qdd = sine_sweep(
-        FIVEBAR_HOME_Q,
-        amplitude_rad=CALIBRATION_AMPLITUDE_RAD,
-        duration_s=CALIBRATION_DURATION_S,
-        frequencies_hz=CALIBRATION_FREQUENCIES_HZ,
-    )
-    return JointTrajectory(
-        t=t,
-        joint_names=FIVEBAR_JOINTS,
-        positions=q,
-        velocities=qd,
-        accelerations=qdd,
-        effort=FivebarFeedforward("rigid_body")(q, qd, qdd),
-    )
-
-
-def _rung(
-    rung_id: str, title: str, description: str, script: Any, start_q: tuple[float, ...], params: dict
-) -> Rung:
+def fivebar_targets() -> tuple[Any, ...]:
+    """The five-bar's fixed targets (§5.4): dev000 at 0.5 time-scaled to slow / nominal / fast, lane A's sweep
+    around home, the collision; path runs start at the tape's start (the station home). R2's gates, 100 Hz
+    host."""
+    from robot_controllers.bench.arm_tapes import TapeScript, tape_targets
     from robot_controllers.bench.rungs import rung
-    from robot_controllers.registry import JOINT_TRAJECTORY
 
-    return Rung(
-        id=rung_id,
-        title=title,
-        box=JOINT_TRAJECTORY,
-        family="free_space",
-        description=description,
-        duration_s=round(script.duration_s + PAD_S, 6),
-        inputs=script,
-        scene=Scene(start_q=start_q),
+    base = rung("R2.FastFreeSpace")
+    return tape_targets(
+        ARM_NAME,
+        TapeScript(PATH_TAPE, ARM_NAME),
+        gates=base.gates,
         timing=HostTiming(),
-        gates=rung("R2.FastFreeSpace").gates,
-        objective="tracking_p95_deg",
-        params=params,
-        plant=ARM_NAME,
+        path_text="arm_motion_bench's BAM FB workspace v2 dev000 tape at 0.5 "
+        "(ISO 9283 line + rectangle, bam_ruckig)",
     )
-
-
-def _speed_params(trajectory: Any) -> dict[str, float]:
-    q = np.asarray(trajectory.positions)
-    tool = tool_position(q)
-    t = np.asarray(trajectory.t)
-    return {
-        "peak_joint_speed_deg_s": math.degrees(float(np.max(np.abs(np.asarray(trajectory.velocities))))),
-        "peak_tool_speed_m_s": float(np.max(np.linalg.norm(np.gradient(tool, t, axis=0), axis=1))),
-    }
-
-
-def path_rung(speed: str) -> Rung:
-    """`bam_fivebar/path@<speed>`: arm_motion_bench's BAM FB workspace v2 dev000 (the ISO 9283 line and
-    rectangle) at slow 0.25, nominal 0.5 or fast 1.0, from its own start (home), host 100 Hz, R2's gates."""
-    from robot_controllers.bench.arm_tapes import TrajectoryScript, tape_record
-
-    fraction = SPEEDS[speed]
-    trajectory = path_trajectory(fraction)
-    record = tape_record(TAPES[fraction])
-    script = TrajectoryScript(functools.partial(path_trajectory, fraction), float(trajectory.t[-1]))
-    return _rung(
-        f"{ARM_NAME}/path@{speed}",
-        f"BAM five-bar dev000 path at {fraction:g}",
-        "arm_motion_bench's BAM FB workspace v2 dev000 tape (ISO 9283 line + rectangle, bam_ruckig) at speed "
-        f"{fraction:g}, resampled onto the 4 ms grid. Tests tracking on the closed-chain arm on the tape "
-        "the real arm runs.",
-        script,
-        tuple(float(v) for v in trajectory.positions[0]),
-        {
-            "speed_fraction": fraction,
-            "tape": record["file"],
-            "tape_sha256": record["sha256"],
-            **_speed_params(trajectory),
-        },
-    )
-
-
-def calibration_rung() -> Rung:
-    """`bam_fivebar/calibration`: every drive swept +-8 deg about home at once for 4 s: each lag shows."""
-    trajectory = calibration_trajectory()
-    from robot_controllers.bench.arm_tapes import TrajectoryScript
-
-    return _rung(
-        f"{ARM_NAME}/calibration",
-        "BAM five-bar calibration sweep",
-        "Every drive sweeps +-8 deg about home at once (sin^2-windowed sines, 0.5-1.75 Hz), at rest at both "
-        "ends. Tests nothing by itself: it is the run a bus calibration reads each joint's delay from.",
-        TrajectoryScript(calibration_trajectory, CALIBRATION_DURATION_S),
-        FIVEBAR_HOME_Q,
-        {"amplitude_deg": math.degrees(CALIBRATION_AMPLITUDE_RAD), **_speed_params(trajectory)},
-    )
-
-
-def fivebar_rungs() -> dict[str, Rung]:
-    """The five-bar's path rungs at three speeds and its calibration sweep, by id."""
-    rungs = [path_rung(speed) for speed in SPEEDS] + [calibration_rung()]
-    return {r.id: r for r in rungs}
 
 
 # ── the registry ───────────────────────────────────────────────────────────────────────────────────────────
@@ -900,10 +806,6 @@ def _feedforward(name: str, model_error: ModelError | None = None) -> FivebarFee
     return FivebarFeedforward(name, model_error)
 
 
-def _targets() -> tuple[Any, ...]:
-    raise NotImplementedError("bam_fivebar's Target records land with lane A's bench.targets (CONTRACT §5.4)")
-
-
 SPEC = register(
     ArmSpec(
         name=ARM_NAME,
@@ -915,7 +817,7 @@ SPEC = register(
         feedforward=_feedforward,
         mass_matrix=fivebar_mass_matrix,
         tool_position=tool_position,
-        targets=_targets,
+        targets=fivebar_targets,
         real_station="bam_fb",
     )
 )

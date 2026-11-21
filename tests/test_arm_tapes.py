@@ -15,19 +15,11 @@ from robot_controllers.bench.arm_tapes import (
     _hermite5,
     load_tape,
     resample,
-    sine_sweep,
     tape_record,
 )
 
 ARM_MOTION_BENCH = Path("/home/bam/arm_motion_bench")
-VENDORED = (
-    "bam_fb/workspace-dev-000.npz",
-    "bam_fb/workspace-dev-000__s0.5.npz",
-    "bam_fb/workspace-dev-000__s0.25.npz",
-    "pendulum/workspace-dev-007.npz",
-    "pendulum/workspace-dev-007__s0.5.npz",
-    "pendulum/workspace-dev-007__s0.25.npz",
-)
+VENDORED = ("bam_fb/workspace-dev-000__s0.5.npz", "pendulum/workspace-dev-007__s0.5.npz")
 
 
 @pytest.mark.parametrize("name", VENDORED)
@@ -77,17 +69,3 @@ def test_resampling_lands_on_every_tape_sample_and_stays_smooth(name):
     # the velocity is the derivative of the position (no corner cut between knots)
     np.testing.assert_allclose(np.gradient(q, t, axis=0)[1:-1], qd[1:-1], atol=2e-3)
     assert np.all(qd[0] == 0.0) and np.all(qd[-1] == 0.0)
-
-
-def test_sine_sweep_moves_every_joint_and_rests_at_both_ends():
-    home = (0.1, -0.2, 0.3)
-    t, q, qd, qdd = sine_sweep(
-        home, amplitude_rad=np.radians(8.0), duration_s=4.0, frequencies_hz=(0.5, 1.0, 1.5)
-    )
-    assert np.all(np.degrees(q.max(0) - q.min(0)) >= 5.0)
-    for row in (0, -1):
-        np.testing.assert_allclose(q[row], home, atol=1e-12)
-        np.testing.assert_allclose(qd[row], 0.0, atol=1e-12)
-        np.testing.assert_allclose(qdd[row], 0.0, atol=1e-9)
-    np.testing.assert_allclose(np.gradient(q, t, axis=0)[1:-1], qd[1:-1], atol=1e-3)
-    np.testing.assert_allclose(np.gradient(qd, t, axis=0)[1:-1], qdd[1:-1], atol=1e-2)

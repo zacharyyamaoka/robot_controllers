@@ -117,31 +117,48 @@ def test_model_error_scales_the_link_and_friction_and_the_mass_matrix_follows():
         assert again == model and repr(again) == repr(model)
 
 
-def test_the_path_rungs_are_dev007_at_three_speeds_and_the_calibration_sweeps_8_degrees():
-    rungs = pd.pendulum_rungs()
-    assert sorted(rungs) == sorted(
-        [*(f"pendulum/path@{s}" for s in ("slow", "nominal", "fast")), "pendulum/calibration"]
+def TARGETS():
+    return {t.id: t for t in pd.pendulum_targets()}
+
+
+def test_the_targets_are_dev007_at_0_5_time_scaled_and_the_sweep_is_about_the_bottom():
+    targets = TARGETS()
+    assert sorted(targets) == sorted(
+        f"pendulum/{s}" for s in ("path@slow", "path@nominal", "path@fast", "calibration", "collision")
     )
+    tape = load_tape(pd.PATH_TAPE)
     peaks = []
-    for speed, fraction in pd.SPEEDS.items():
-        rung = rungs[f"pendulum/path@{speed}"]
-        tape = load_tape(pd.TAPES[fraction])
+    for speed in ("slow", "nominal", "fast"):
+        rung = targets[f"pendulum/path@{speed}"].rung()
         assert rung.plant == "pendulum" and rung.scene.start_q == (float(tape.positions[0][0]),)
-        trajectory = rung.inputs(np.asarray(rung.scene.start_q))[0][1]
-        assert trajectory.t[-1] == pytest.approx(float(tape.t[-1]))
+        trajectory = rung.inputs(np.asarray(pd.PENDULUM_HOME_Q))[0][1]
+        assert np.all(np.abs(trajectory.effort) < pd.PENDULUM_TRUTH.torque_cap_nm)
         peaks.append(rung.params["peak_joint_speed_deg_s"])
     assert peaks[0] < peaks[1] < peaks[2] and peaks[2] < math.degrees(5.0)  # the joint's measured 5 rad/s
-    calibration = rungs["pendulum/calibration"].inputs(np.asarray(pd.PENDULUM_HOME_Q))[0][1]
-    q = np.asarray(calibration.positions)[:, 0]
+    nominal = targets["pendulum/path@nominal"].rung().inputs(np.zeros(1))[0][1]
+    np.testing.assert_allclose(nominal.positions[::5], np.asarray(tape.positions)[::2], atol=1e-12)
+    calibration = targets["pendulum/calibration"].rung()
+    q = np.asarray(calibration.inputs(np.asarray(pd.PENDULUM_HOME_Q))[0][1].positions)[:, 0]
     assert math.degrees(q.max() - q.min()) >= 5.0 and q[0] == q[-1] == pytest.approx(pd.BOTTOM_RAD)
 
 
+def test_the_collision_stop_is_felt_half_way_along_the_swing():
+    from robot_controllers.bench.layouts import layout_spec
+    from robot_controllers.bench.loop import run_episode
+
+    rung = TARGETS()["pendulum/collision"].rung()
+    ((joint, angle, side),) = rung.scene.stops
+    q = np.asarray(rung.inputs(np.zeros(1))[0][1].positions)[:, 0]
+    assert joint == 0 and angle == pytest.approx(0.5 * (q.min() + q.max())) and side == "upper"
+    log = run_episode(layout_spec("trajectory", "trajectory", "board_gains", "board", arm="pendulum"), rung)
+    assert any(e["kind"] == "stop_touch" for e in log.events)
+    assert np.max(np.abs(log.tau_stop[:, 0])) > 0.1 and np.max(log.q[:, 0]) < angle + np.radians(1.0)
+
+
 def test_the_arm_registers_itself():
-    pytest.importorskip(
-        "robot_controllers.bench.arm_planar", reason="the registry's planar module lands with lane A"
-    )
-    from robot_controllers.bench.arms import arm
+    from robot_controllers.bench.arms import arm, arms
 
     spec = arm("pendulum")
     assert spec is pd.SPEC and spec.joint_names == ("can11",) and spec.real_station == "pendulum"
+    assert [a.name for a in arms()][3] == "pendulum"
     assert isinstance(spec.plant(), pd.PendulumPlant)

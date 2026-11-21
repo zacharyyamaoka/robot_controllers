@@ -2,7 +2,7 @@
 moteus board model, arm_motion_bench's identified feed-forward and its fixed targets (CONTRACT amendment 5,
 §5.8).
 
-    from robot_controllers.bench.pendulum import PendulumPlant, pendulum_feedforward, pendulum_rungs
+    from robot_controllers.bench.pendulum import pendulum_feedforward, pendulum_targets
     ff = pendulum_feedforward("rigid_body_coulomb")   # (1,) -> (1,), (N, 1) -> (N, 1): FF_MODEL
 
 Zach, 2026-11-20: "and then also the 1 dof pendulum sim and real".
@@ -28,8 +28,8 @@ Zach, 2026-11-20: "and then also the 1 dof pendulum sim and real".
   `rigid_body` without the Coulomb term; `gravity` the G term alone. So "the model exactly" (ModelError()) is
   the rig's real model, 3-12 % off the twin's truth (G 4.25 and J 0.115 in board torque), as the real arm's
   is.
-- **ModelError**: the one link's G and J × its link factor (the identified J is the axis total; the rotor's
-  ~2 % rides along: nothing on the rig separates it), Coulomb and viscous × the friction factor.
+- **ModelError**: the one link's G and J × its link factor (the identified J is the axis total; the rotor's ~2
+  % rides along: nothing on the rig separates it), Coulomb and viscous × the friction factor.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ import numpy as np
 from robot_controllers.bench.arms import ArmSpec, register
 from robot_controllers.bench.board import BoardConfig
 from robot_controllers.bench.plant import PREROLL_S, TIME_TOLERANCE_S, ServoPlant
-from robot_controllers.bench.types import HostTiming, Rung, Scene
+from robot_controllers.bench.types import HostTiming, Scene
 from robot_controllers.models import ModelError
 
 ARM_NAME = "pendulum"
@@ -288,11 +288,14 @@ class PendulumPlant(ServoPlant):
         self.timing = timing or HostTiming()
         self._reset_bus(seed, self.timing)
         self.contact_calibration = None
-        self._model = model = _plant_model()
-        self._data = data = mujoco.MjData(model)
         start_q = np.asarray(scene.start_q if scene.start_q is not None else self.home_q, dtype=float)
         if start_q.shape != (1,):
             raise ValueError(f"start_q must be 1 joint angle, got {start_q}")
+        model = _plant_model()
+        # the scene's hard stop (Scene.stops) as a joint-range limit on a private copy
+        # (ServoPlant._stopped_model)
+        self._model = model = self._stopped_model(model, scene, [model.joint("can11").id], start_q)
+        self._data = data = mujoco.MjData(model)
         self.start_q = tuple(float(v) for v in start_q)
         data.qpos[0] = start_q[0]
         data.qvel[:] = 0.0
@@ -316,6 +319,7 @@ class PendulumPlant(ServoPlant):
         mujoco, model, data, boards = self._mujoco, self._model, self._data, self.boards
         dt, scale = self._dt, float(self.truth.torque_scale)
         qpos, qvel, qfrc = data.qpos, data.qvel, data.qfrc_applied
+        stops = bool(self._stops)
         first_k = self._first_k
         k = self._k
         while k * dt < until - TIME_TOLERANCE_S:
@@ -327,6 +331,8 @@ class PendulumPlant(ServoPlant):
             tau = boards.step(t, (q_true,))
             qfrc[0] = scale * tau[0]
             mujoco.mj_step(model, data)
+            if stops:
+                self._record_stops(k, t)
             row = k - first_k
             self._sample_q[row] = boards.measured_position
             self._sample_qd[row] = boards.measured_velocity
@@ -365,128 +371,28 @@ class PendulumPlant(ServoPlant):
 
 # ── the targets ────────────────────────────────────────────────────────────────────────────────────────────
 
-# WHY dev-007 at 0.5 nominal: the real showcase (arm_motion_bench scripts/pendulum_showcase.py SEGMENTS)
-# played the v2 dev tour from the bottom and ran tasks 005-007 at 0.5, 007 being its 138 deg (63 cm) swing, so
-# a real log of it compares one to one; fast (1.0) reaches 4.95 rad/s, the joint's 5 rad/s.
-SPEEDS: dict[str, float] = {"slow": 0.25, "nominal": 0.5, "fast": 1.0}
-TAPES: dict[float, str] = {
-    1.0: "pendulum/workspace-dev-007.npz",
-    0.5: "pendulum/workspace-dev-007__s0.5.npz",
-    0.25: "pendulum/workspace-dev-007__s0.25.npz",
-}
-CALIBRATION_AMPLITUDE_RAD = math.radians(8.0)
-CALIBRATION_DURATION_S = 4.0
-CALIBRATION_FREQUENCIES_HZ = (1.0,)
-PAD_S = 0.6
-
-
-@functools.lru_cache(maxsize=8)
-def path_trajectory(speed: float) -> Any:
-    """dev-007 at speed fraction `speed` on the 4 ms grid, effort = the nominal `rigid_body` model (FF_MODEL,
-    no Coulomb)."""
-    from robot_controllers.bench.arm_tapes import tape_trajectory
-
-    return tape_trajectory(TAPES[float(speed)], PendulumFeedforward("rigid_body"))
+# WHY dev-007 at 0.5 as the base (nominal) path: the real showcase (arm_motion_bench
+# scripts/pendulum_showcase.py SEGMENTS) played the v2 dev tour from the bottom and ran tasks 005-007 at 0.5,
+# 007 being its 138 deg (63 cm) swing, so a real log of it compares one to one with path@nominal.
+PATH_TAPE = "pendulum/workspace-dev-007__s0.5.npz"
 
 
 @functools.lru_cache(maxsize=1)
-def calibration_trajectory() -> Any:
-    from robot_msgs.trajectory import JointTrajectory
-
-    from robot_controllers.bench.arm_tapes import sine_sweep
-
-    t, q, qd, qdd = sine_sweep(
-        PENDULUM_HOME_Q,
-        amplitude_rad=CALIBRATION_AMPLITUDE_RAD,
-        duration_s=CALIBRATION_DURATION_S,
-        frequencies_hz=CALIBRATION_FREQUENCIES_HZ,
-    )
-    return JointTrajectory(
-        t=t,
-        joint_names=PENDULUM_JOINTS,
-        positions=q,
-        velocities=qd,
-        accelerations=qdd,
-        effort=PendulumFeedforward("rigid_body")(q, qd, qdd),
-    )
-
-
-def _rung(
-    rung_id: str, title: str, description: str, script: Any, start_q: tuple[float, ...], params: dict
-) -> Rung:
+def pendulum_targets() -> tuple[Any, ...]:
+    """The pendulum's fixed targets (§5.4): dev-007 at 0.5 time-scaled to slow / nominal / fast, lane A's
+    sweep around the bottom, the collision; path runs start at the tape's start. R2's gates, 100 Hz host."""
+    from robot_controllers.bench.arm_tapes import TapeScript, tape_targets
     from robot_controllers.bench.rungs import rung
-    from robot_controllers.registry import JOINT_TRAJECTORY
 
-    return Rung(
-        id=rung_id,
-        title=title,
-        box=JOINT_TRAJECTORY,
-        family="free_space",
-        description=description,
-        duration_s=round(script.duration_s + PAD_S, 6),
-        inputs=script,
-        scene=Scene(start_q=start_q),
+    base = rung("R2.FastFreeSpace")
+    return tape_targets(
+        ARM_NAME,
+        TapeScript(PATH_TAPE, ARM_NAME),
+        gates=base.gates,
         timing=HostTiming(),
-        gates=rung("R2.FastFreeSpace").gates,
-        objective="tracking_p95_deg",
-        params=params,
-        plant=ARM_NAME,
+        path_text="arm_motion_bench's pendulum workspace v2 dev-007 tape at 0.5 "
+        "(a 138 deg swing, bam_ruckig)",
     )
-
-
-def _speed_params(trajectory: Any) -> dict[str, float]:
-    t = np.asarray(trajectory.t)
-    tool = tool_position(np.asarray(trajectory.positions))
-    return {
-        "peak_joint_speed_deg_s": math.degrees(float(np.max(np.abs(np.asarray(trajectory.velocities))))),
-        "peak_tool_speed_m_s": float(np.max(np.linalg.norm(np.gradient(tool, t, axis=0), axis=1))),
-    }
-
-
-def path_rung(speed: str) -> Rung:
-    """`pendulum/path@<speed>`: arm_motion_bench's pendulum workspace v2 dev-007 (a 138 deg swing) at slow
-    0.25, nominal 0.5 or fast 1.0, from its own start, host 100 Hz, R2's gates."""
-    from robot_controllers.bench.arm_tapes import TrajectoryScript, tape_record
-
-    fraction = SPEEDS[speed]
-    trajectory = path_trajectory(fraction)
-    record = tape_record(TAPES[fraction])
-    return _rung(
-        f"{ARM_NAME}/path@{speed}",
-        f"Pendulum dev-007 swing at {fraction:g}",
-        "arm_motion_bench's pendulum workspace v2 dev-007 tape (a 138 deg swing, bam_ruckig) at speed "
-        f"{fraction:g}, resampled onto the 4 ms grid. Tests tracking through a gravity load that changes "
-        "sign, on the tape the rig runs.",
-        TrajectoryScript(functools.partial(path_trajectory, fraction), float(trajectory.t[-1])),
-        (float(trajectory.positions[0][0]),),
-        {
-            "speed_fraction": fraction,
-            "tape": record["file"],
-            "tape_sha256": record["sha256"],
-            **_speed_params(trajectory),
-        },
-    )
-
-
-def calibration_rung() -> Rung:
-    from robot_controllers.bench.arm_tapes import TrajectoryScript
-
-    trajectory = calibration_trajectory()
-    return _rung(
-        f"{ARM_NAME}/calibration",
-        "Pendulum calibration sweep",
-        "The joint sweeps +-8 deg about the bottom (a sin^2-windowed 1 Hz sine), at rest at both ends. "
-        "The run a bus calibration reads the joint's delay from.",
-        TrajectoryScript(calibration_trajectory, CALIBRATION_DURATION_S),
-        PENDULUM_HOME_Q,
-        {"amplitude_deg": math.degrees(CALIBRATION_AMPLITUDE_RAD), **_speed_params(trajectory)},
-    )
-
-
-def pendulum_rungs() -> dict[str, Rung]:
-    """The pendulum's path rungs at three speeds and its calibration sweep, by id (`plant = "pendulum"`)."""
-    rungs = [path_rung(speed) for speed in SPEEDS] + [calibration_rung()]
-    return {r.id: r for r in rungs}
 
 
 # ── the registry ───────────────────────────────────────────────────────────────────────────────────────────
@@ -517,7 +423,7 @@ SPEC = register(
         feedforward=_feedforward,
         mass_matrix=pendulum_mass_matrix,
         tool_position=tool_position,
-        targets=_targets,
+        targets=pendulum_targets,
         real_station="pendulum",
     )
 )

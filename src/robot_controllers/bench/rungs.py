@@ -207,6 +207,7 @@ def _joint_quintic_trajectory(
     start_acceleration: np.ndarray,
     target: np.ndarray,
     duration: float,
+    arm: str = "planar_arm",
 ) -> JointTrajectory:
     count = int(round(duration / SAMPLE_PERIOD_S))
     t = np.arange(count + 1) * SAMPLE_PERIOD_S
@@ -216,13 +217,21 @@ def _joint_quintic_trajectory(
         q[:, j], qd[:, j], qdd[:, j] = quintic(
             start[j], start_velocity[j], start_acceleration[j], target[j], 0.0, 0.0, duration, t
         )
+    if arm == "planar_arm":
+        names, effort = JOINT_NAMES, nominal_dynamics(q, qd, qdd)
+    else:
+        # any other registered arm (amendment 5, §5.1): its joint names and its nominal rigid_body model
+        from robot_controllers.bench.arms import arm as registered
+
+        spec = registered(arm)
+        names, effort = spec.joint_names, spec.feedforward("rigid_body", None)(q, qd, qdd)
     return JointTrajectory(
         t=t,
-        joint_names=JOINT_NAMES,
+        joint_names=names,
         positions=q,
         velocities=qd,
         accelerations=qdd,
-        effort=nominal_dynamics(q, qd, qdd),
+        effort=effort,
     )
 
 
@@ -245,14 +254,21 @@ class ToolPathScript:
 
 @dataclass(frozen=True)
 class HoldScript:
-    """One JointTrajectory at t = 0 holding the start joints for `duration_s`, effort = gravity."""
+    """One JointTrajectory at t = 0 holding the start joints for `duration_s`, effort = gravity, on `arm`.
+
+    WHY `for_arm` (amendment 5, lane B1): a hold carries no arm of its own, so `run_episode` binds it to the
+    rung's plant (`script.for_arm(rung.plant)`) before calling it; on the planar arm it is the hold it was."""
 
     duration_s: float
+    arm: str = "planar_arm"
+
+    def for_arm(self, arm: str) -> HoldScript:
+        return self if arm == self.arm else dataclasses.replace(self, arm=arm)
 
     def __call__(self, start_q: np.ndarray) -> list[tuple[float, Any]]:
         start = np.asarray(start_q, dtype=float)
         zero = np.zeros_like(start)
-        return [(0.0, _joint_quintic_trajectory(start, zero, zero, start, self.duration_s))]
+        return [(0.0, _joint_quintic_trajectory(start, zero, zero, start, self.duration_s, self.arm))]
 
 
 @dataclass(frozen=True)
