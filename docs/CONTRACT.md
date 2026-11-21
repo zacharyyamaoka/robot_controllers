@@ -438,3 +438,219 @@ Two changes the first sweep (`22c2ffb`) showed were needed. Neither moves a gate
    (median µs × 100 / 10⁴), so one noisy rung can't flip a pick. Everything else in the rule stays.
 4. `joint_impedance_host` and `joint_impedance_host_spring` get `last_split()`, so their host feedback counts as
    feedback on the main ladder.
+
+## Amendment 4 (2026-11-20: host rate, speed, lookahead calibration, a moving target, and a UR5e; a barrier, applied alone)
+
+Zach, 2026-11-20: "why is 50hz a meaning control hz? I would be curious to see more clearly how the results change with
+different control frequency … Can you please run examples on the UR robot arm. and also try trajectories at different
+speeds. I kinda want to make this a nice stable conclusion." And: "how that can be calibrated on how far the look ahead
+should be? how that that impact when you are doing like syncing to catch a moving item where timing is very important?
+… how reliabiliy does look ahead work?"
+
+What the dispatcher measured before writing this (scratch runs on `a07fef1`, R2's path, `trajectory@trajectory +
+board_gains@board`):
+
+- **Rate.** With `lookahead_s` = 5.5 ms, R2 tracking p95 is 13.7° at 10 Hz, 2.05° at 25 Hz, 0.775° at 50 Hz, 0.347° at
+  100 Hz, 0.152° at 200 Hz and 0.098° at 500 Hz. The board closes feedback at 4 kHz whatever the host does, but between
+  two commands it walks the setpoint at the sent (tangent) velocity and holds the feed-forward. The error from that grows
+  with the square of the period.
+- **Interpolation.** If the host sends the *secant* velocity `(p(t+T) − p(t))/T` instead, the walk lands on the next
+  sample. The trajectory is known ahead, so this costs nothing. R2 p95 then drops to 0.223° at 50 Hz and 0.979° at
+  10 Hz. Adding the effort sampled at the middle of the hold (`t + T/2`) gives 0.201° at 50 Hz and 0.122° at 100 Hz.
+  It is flat above 100 Hz (0.116° at 200 Hz, 0.115° at 500 Hz).
+- **Lookahead calibration.** The tracking error is V-shaped in the lookahead: lowest at 5.0–5.5 ms, rising about 0.3°
+  per ms either side on R2 at 100 Hz. One run at lookahead 0 gives the delay directly: the shift τ that minimises
+  `Σ_j RMS(ref_j(t − τ) − q_j(t))` is 5.50 ms, the bus delay.
+- **Real bus.** The rig's 50 Hz comes from the bus, not the host. One fdcanusb exchanges with all seven boards in
+  ~15.5 ms (p95 16.4 ms, 2026-11-18), so a 10 ms tick cannot hold it (bam_ws PEP 0048, `full_arm.py:77-80`). The
+  twin's 5.5 ms down-delay is a model fit (`rack_truths.py:240-250`), not a timed number. On one bus the boards are
+  served in turn, so each joint's delay differs. Per-joint delay and lookahead are therefore part of this amendment.
+
+### 4.1 The layout gains interpolation and per-joint lookahead (`models.py`, `controllers/layout.py`)
+
+- `Layout.interpolation` ∈ {`tangent` (default, today's behaviour), `secant`, `secant_mid_ff`}. Let s be the sample time
+  (clock + the joint's lookahead) and T the controller's nominal host period. T is `LayoutConfig.control_period_s`,
+  which the bench sets from the rung's rate through `_rate_overrides`, as for the tape controllers.
+  - **`secant`:** the velocity sent is `(p(s + T) − p(s)) / T`, with p sampled by `TrajectorySampler`. It holds the
+    last sample past the end, so the final secant walks onto the end point. The at-rest rule stays: velocity 0 once
+    s ≥ end.
+  - **`secant_mid_ff`:** additionally, everything the feed-forward reads from the reference is taken at `s + T/2`. That
+    covers the effort column for `trajectory`, the plan-time column for `plan`, and the reference sample for
+    `host_reference`. `host_measured` still uses the measured q, qd, with the reference qdd at `s + T/2`.
+  - **Host and split feedback** are evaluated at the tick as today. Split's board damper gets the secant velocity
+    as its target.
+  - A non-default interpolation adds `+interp=<value>` to the name (after `+la=…`).
+- `Layout.lookahead_s` may be a tuple, one value ≥ 0 per joint in the trajectory's joint order; a scalar applies to all
+  joints. Each joint's reference (position, velocity, the feed-forward's sample) is taken at clock + its own lookahead.
+  Feedback models that need the whole vector (`InertiaScaledPD`) take each joint's own sample. Name:
+  `+la=<ms>/<ms>/…ms`, each `:g`. `Layout.check` refuses a tuple of the wrong length at build.
+- `layout_spec(ff_model, ff_at, fb_model, fb_at, lookahead_s=0.0, interpolation="tangent", arm="planar_arm")`; the
+  name check in `core.py` accepts the new suffixes.
+- The defaults reproduce today's commands bit for bit. `test_layout_acceptance.py` must keep passing unchanged.
+
+### 4.2 The bus gains per-joint delay and jitter (`bench/types.py`, `bench/plant.py`)
+
+- `HostTiming.command_delay_s` may be a tuple, one value per plant joint: joint j's part of a command latches at
+  sent + delay_j.
+- `HostTiming.command_delay_jitter_s` (default 0): each command's delay gets one draw u ~ U(−jitter, +jitter). It comes
+  from its own generator seeded from the episode seed, so the host wake-jitter draws never shift. The draw is added to
+  every joint's delay. Latches stay first-in first-out per joint, as on a CAN bus: a command never latches before the
+  one sent before it, and if it would, it latches on the same tick.
+- With the defaults the episode is identical to today's: same samples, same latches, same metrics.
+
+### 4.3 Lag, sync and the calibration (`metrics/lag.py`, `metrics/names.py`)
+
+- `estimate_lag_s(log, *, per_joint=False, max_s=0.030, step_s=0.00025)` (reads only `log.t`, `log.q`, `log.sent_t`,
+  `log.ref_position`): the shift τ ∈ [−max_s, +max_s] on a step_s
+  grid that minimises `Σ_j Σ_i (ref_j(t_i − τ) − q_j(t_i))²`.
+  - **Data:** the plant samples t_i in [first sent_t + 0.05 s, last sent_t]. `ref` is `log.ref_position`, linear in
+    `log.sent_t`. A tie goes to the smallest |τ|.
+  - **`per_joint=True`:** returns one τ per joint, or None for a joint whose reference moves less than 0.1° peak to peak.
+  - **Sign:** positive means the arm lags the reference.
+- `calibrate_lookahead(spec_at, rung, *, seed=0) -> tuple[float, ...]`. It runs `spec_at(0.0)` (a callable lookahead
+  → spec) once on `rung`, returns the per-joint `estimate_lag_s` clipped at ≥ 0, and fills a None joint with the median
+  of the others. This is the one-run calibration procedure, the same one a real arm's log would go through.
+- New metrics:
+
+  | name | unit | family | better | definition |
+  |---|---|---|---|---|
+  | `tracking_lag_ms` | ms | tracking | none | 1000 · `estimate_lag_s(log)` (whole arm, signed) |
+  | `sync_error_p95_mm` | mm | tracking | lower | the sync window's 95th percentile of the tool's distance from the target point (below) |
+  | `sync_timing_ms` | ms | tracking | none | 1000 · mean over the sync window of (target x − tool x) / belt speed: signed, positive = behind the item |
+
+  The sync metrics exist only on a rung whose `params` carry `sync_start_s`, `sync_end_s` and `belt_speed_m_s`, and
+  are None elsewhere. The target point at t_i is `log.ref_tool_pos` linearly interpolated in `log.sent_t`. The tool is
+  `log.tool_pos`.
+
+### 4.4 Rung variants and one new rung (`bench/rungs.py`)
+
+The main ladders are unchanged except for one rung appended to the JointTrajectory ladder. The variants are functions,
+not ladder rungs.
+
+- `rate_variant(rung, rate_hz)`:
+  - The rung with `timing.rate_hz` replaced, every other timing field kept.
+  - id `<id>·host<rate:g>Hz`; gates = the rung's gates without its two timing gates, plus `timing_gates(rate_hz)`;
+    `params["host_rate_hz"] = rate_hz`; everything else identical.
+  - `rate_variant(R2, 50)` and `R9.FastFreeSpace·host50Hz` have equal timing, gates (as sets of
+    (metric, op, value)) and scripts.
+- `speed_variant(rung, move_s)`: for rungs with `params["move_s"]` (R1, R2, U1, U2):
+  - The same path at `move_s` per move, `duration_s` = script duration + 0.6 s, id `<id>·move<move_s·1000:g>ms`.
+  - Gates = the base rung's.
+  - Params gain `move_s`, `peak_joint_speed_deg_s` and `peak_tool_speed_m_s`, computed from the script's reference.
+  - `speed_variant(R2, 0.8)`'s script equals R1's; `speed_variant(R2, 0.3)`'s equals R2's.
+- `bus_variant(rung, command_delay_s, jitter_s=0.0)`: timing with those fields replaced. id
+  `<id>·bus<ms>ms[±<ms>ms]`, with a tuple written as `<ms>/<ms>/…`.
+- `sync_variant(belt_speed_m_s)`: the rung below at another belt speed.
+- **`R10.BeltSync@0.25m/s`** (order 14, family `sync`, JointTrajectory):
+  - A virtual item rides the belt at 0.25 m/s along +x, 50 mm above the belt top (tool centre z = 0.20 m). The belt
+    itself is off: there is no contact.
+  - The tool path: hold at (0.11, 0.20) for 0.3 s; quintic blend to (0.16, 0.20), from rest to v; cruise to
+    (0.36, 0.20) at v (the sync window); quintic blend to (0.40, 0.20), from v to rest; hold 0.3 s.
+  - Each blend takes 2 · its distance / v. The scene's `start_q` is the elbow-up IK of the first point.
+  - Params: `belt_speed_m_s`, `sync_start_s` and `sync_end_s` (the cruise window).
+  - Gates: `sync_error_p95_mm` ≤ 5 ("the tool stays within 5 mm of a point riding the belt"),
+    `saturation_share` ≤ 5, `diverged` == 0, and the timing gates. Objective `sync_error_p95_mm`.
+  - The study's speeds: 0.10, 0.25, 0.50 and 1.00 m/s.
+
+### 4.5 A UR5e plant (`bench/ur5e.py`, `bench/models/ur5e_bare.xml` + its LICENSE)
+
+- **Model.** The links are the MuJoCo Menagerie UR5e's kinematics and inertials (BSD-3, ROS-Industrial). They are
+  vendored from bam_ws `bam_pid_tunning/tests/fixtures/ur5e_bare.xml`: no meshes, no actuators, no contacts.
+- **Truth.** Six joints `shoulder_pan_joint … wrist_3_joint`, with the values from bam_pid_tunning `arm_truths.ur5e_arm`:
+  armature (0.5, 0.5, 0.5, 0.08, 0.08, 0.08) kg·m², frictionloss (4.0 ×3, 0.8 ×3) N·m, damping (2.0 ×3, 0.3 ×3)
+  N·m·s/rad, 4 kHz physics.
+- **Home and tool.** Home is (0, −1.2, 1.4, −1.6, −1.57, 0) rad. The tool is a site 0.1 m out along the flange (wrist_3
+  body, `0 0.1 0`, Menagerie's attachment site). `Scene.payload_kg` adds a point mass there; `Scene.belt` and pushes
+  are refused (ValueError).
+- **Boards.** The same moteus board model with these values:
+  - torque caps (150 ×3, 28 ×3) N·m (UR5e datasheet);
+  - encoder 2^14 counts, and every other `BoardConfig` field at its default;
+  - gains at the twin shoulder's bandwidth: `kp_j = M_jj(home) · ωn²`, `kd_j = 2 ζ ωn · M_jj(home)`. Here M is the full
+    joint-space mass matrix at home, armature included. ωn = √(300 / M₁₁ᵖˡᵃⁿᵃʳ(home)) and ζ = 7.5 / (2 √(300 · M₁₁ᵖˡᵃⁿᵃʳ(home))),
+    from the planar arm's shoulder (39.7 rad/s and 0.496). Unrounded.
+- **Feed-forward models** (`ur5e_feedforward(terms)`, pure, as §3.1): `gravity`, `rigid_body` (+ inertia, Coriolis and
+  viscous: the nominal model the U rungs fill effort with) and `rigid_body_coulomb` (+ frictionloss · tanh(qd / 0.01)).
+  Each is MuJoCo `mj_inverse` on its own private copy of the nominal model (no payload).
+- **Feedback models.** `ur5e_mass_matrix()` is the mass matrix by `mj_fullM`. `ctc` is `InertiaScaledPD` with ζ 0.9,
+  its bandwidth chosen so that its shoulder_lift kp at home equals the board's shoulder_lift kp (as §3.6 does on the
+  planar shoulder).
+- `layout_spec(..., arm="ur5e")` resolves the model names on the UR5e. The default stays `"planar_arm"`.
+- **Module API** (`robot_controllers.bench.ur5e`): `MODEL_PATH`, `UR5E_JOINTS`, `UR5E_HOME_Q`, `UR5E_TRUTH`,
+  `ur5e_feedforward(terms)`, `ur5e_mass_matrix()`, `ur5e_board_config()`, `Ur5ePlant` (the plant interface of
+  `PlanarArmPlant`, `name = "ur5e"`) and `ur5e_rungs()`.
+- **Rungs.** `Rung.plant` (default `"planar_arm"`) names the plant; `run_episode` builds that plant when no factory is
+  passed. Tool metrics use the plant's own forward kinematics (`plant.tool_position(q)`). `ur5e_rungs()` returns the two
+  UR5e rungs; they are not in `ladder()`.
+  - **Path.** A hold of 0.3 s, then minimum-jerk joint moves W0 → W1 → W2 → W0, with a 0.3 s rest after each:
+    - W0 = home;
+    - W1 = (0.9, −0.8, 1.0, −1.8, −1.57, 0.6);
+    - W2 = (−0.6, −1.5, 1.8, −1.9, −1.2, −0.5).
+  - **Effort column.** The nominal `rigid_body` model.
+  - **`U1.FreeSpace`:** 1.2 s per move, with R1's gates: tracking ≤ 1°, saturation ≤ 2 %, diverged, faults, timing.
+  - **`U2.FastFreeSpace`:** 0.45 s per move, with R2's gates. At 0.45 s the dispatcher's sizing puts the pan joint at
+    about 80 % of its cap.
+  - The study's move times are (2.0, 1.2, 0.8, 0.6, 0.45, 0.35) s. At 0.35 s the pan joint needs 125 % of its cap: the
+    arm's edge, kept on purpose.
+
+### 4.6 The study (`bench/study.py`, CLI `robot-controllers study`, ledger `results/study/results.json`, schema `robot-controllers/study-1`)
+
+**The study layouts** (`STUDY_LAYOUTS`, in this order, by name):
+
+1. `ff=none@none+fb=board_gains@board+la=5.5ms`
+2. `ff=trajectory@trajectory+fb=board_gains@board`
+3. `ff=trajectory@trajectory+fb=board_gains@board+la=5.5ms`
+4. `ff=trajectory@trajectory+fb=board_gains@board+la=5.5ms+interp=secant_mid_ff`
+5. `ff=rigid_body@plan+fb=pd@split`
+6. `ff=rigid_body@host_measured+fb=ctc@host`
+7. `ff=rigid_body@plan+fb=pd@host`
+
+**The arms:** the planar arm (base rungs R2, and R10 for sync) and the UR5e (base U2).
+
+**The dimensions**, one row per (arm, dimension, value, layout, seed):
+
+- **`rate`:** `rate_variant(base, r)` for r ∈ (10, 25, 50, 100, 200, 500, 1000) Hz.
+- **`speed`:** `speed_variant(base, m)` at 100 Hz. Planar m ∈ (1.2, 0.8, 0.5, 0.3, 0.2) s; UR5e as §4.5.
+- **`rate_speed`:** the grid of both, for layouts 2, 3, 4, 6 and 7.
+- **`lookahead`:** layouts 3 and 4 with `lookahead_s` ∈ (0, 1, 2, 3, 4, 4.5, 5, 5.5, 6, 6.5, 7, 8, 10, 12) ms, on the
+  base rung at 100 Hz and at 50 Hz.
+- **`jitter`:** layout 4 on `bus_variant(base, 0.0055, j)` for j ∈ (0, 0.5, 1, 2, 3) ms, seeds 0–4.
+- **`stagger`:** `bus_variant(base, d)` with `d_j = 1.5 + 2.2·j` ms (a one-adapter bus at ~2.2 ms per board), with
+  layout 4 four ways:
+  - lookahead 5.5 ms (miscalibrated);
+  - the scalar mean of d;
+  - per-joint d (the truth);
+  - per-joint `calibrate_lookahead` (the one-run procedure; the row also carries the calibrated values).
+
+  Each runs at 50 and 100 Hz.
+- **`sync`** (planar only): `sync_variant(v)` for the four speeds, all seven layouts, plus layouts 3 and 4 over the
+  lookahead list at 0.25 m/s.
+
+**Each row** carries:
+
+- `arm`, `dimension`, `value`, `base_rung`, `rung` (id), `layout` (name) and `seed`;
+- every metric, `passed` and the failed gates' labels;
+- `per_joint_lag_ms`.
+
+**The summary** answers per arm, from the rows:
+
+- the rate above which layout 4 is within 10 % of its 1 kHz tracking;
+- the lookahead that minimises tracking at each rate;
+- the tracking cost of ±1 ms of lookahead error;
+- the calibrated-vs-true per-joint lookahead error;
+- the sync timing and error per layout per belt speed.
+
+**Running it.** Sequential by default; `--workers` for speed, with the cost numbers flagged as in §3.6. The builder runs
+it once and commits the ledger.
+
+### 4.7 Write set
+
+The builder writes:
+
+- `models.py`, `controllers/layout.py`;
+- `bench/types.py`, `bench/plant.py`, `bench/board.py` (if needed), `bench/loop.py`;
+- `bench/ur5e.py`, `bench/models/` (new), `bench/rungs.py`, `bench/layouts.py`, `bench/study.py` (new), `bench/cli.py`;
+- `metrics/lag.py` (new), `metrics/names.py`, `metrics/episode.py`;
+- `results/study/`, and their own tests.
+
+**`tests/test_study_acceptance.py` is the dispatcher's**, written before the build and read-only to the builder, as is
+`tests/test_layout_acceptance.py`.
