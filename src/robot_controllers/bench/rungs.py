@@ -14,10 +14,16 @@ rate.
 Gate numbers are the ruler: never move them after seeing results; a controller that fails is a finding.
 
 Input scripts are small frozen dataclasses (not closures) so a rung pickles into a worker process.
+
+Amendment 4 (§4.4) adds `R10.BeltSync@0.25m/s` (the tool keeping pace with a point riding the belt) and four
+variant functions, which are not ladder rungs: `rate_variant` (another host rate, its timing gates with it),
+`speed_variant` (the same free-space path at another move time), `bus_variant` (another command delay, per
+joint, with jitter) and `sync_variant` (R10 at another belt speed).
 """
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import math
 from dataclasses import dataclass
@@ -61,6 +67,13 @@ REPLAN_TARGET_SEED = (
 )
 STALL_S = 0.5
 PAYLOAD_KG = 0.3  # R8: on the tool, known to no feed-forward model (amendment 3)
+# R10 (amendment 4, §4.4): a virtual item rides the belt along +x, 50 mm above its top (the tool centre's z)
+SYNC_POINTS_X_M = (0.11, 0.16, 0.36, 0.40)  # hold, cruise start, cruise end, rest
+SYNC_Z_M = 0.20
+SYNC_HOLD_S = 0.3
+SYNC_BELT_SPEED_M_S = 0.25
+SYNC_TOLERANCE_MM = 5.0
+TIMING_METRICS = ("missed_cycles", "latency_p99_ms")  # the two gates timing_gates() adds
 
 
 # ── paths ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -606,6 +619,7 @@ def _joint_trajectory_ladder() -> tuple[Rung, ...]:
             )
         )
     rungs.extend(_amendment_three_rungs(rungs[1]))
+    rungs.append(sync_variant(SYNC_BELT_SPEED_M_S))
     return tuple(rungs)
 
 
@@ -656,6 +670,188 @@ def _amendment_three_rungs(fast: Rung) -> list[Rung]:
             )
         )
     return rungs
+
+
+# ── amendment 4 (§4.4): the sync rung and the variants ───────────────────────────────────────────────────
+
+
+def sync_segments(belt_speed_m_s: float) -> tuple[tuple[Segment, ...], tuple[float, float]]:
+    """R10's tool path and its sync window (the cruise): hold at (0.11, 0.20) for 0.3 s, a quintic blend to
+    (0.16, 0.20) from rest to the belt speed v, cruise to (0.36, 0.20) at v, blend to (0.40, 0.20) from v to
+    rest, hold 0.3 s. Each blend takes 2 · its distance / v (as the belt rungs' touch-down: the speed rises
+    monotonically to v without overshooting it)."""
+    speed = float(belt_speed_m_s)
+    if not (math.isfinite(speed) and speed > 0.0):
+        raise ValueError(f"belt_speed_m_s must be finite and > 0, got {belt_speed_m_s!r}")
+    hold, start, end, rest = ((x, SYNC_Z_M) for x in SYNC_POINTS_X_M)
+    blend_in_s = 2.0 * (start[0] - hold[0]) / speed
+    cruise_s = (end[0] - start[0]) / speed
+    blend_out_s = 2.0 * (rest[0] - end[0]) / speed
+    segments: tuple[Segment, ...] = (
+        ("hold", hold, SYNC_HOLD_S),
+        ("blend", hold, start, 0.0, speed, blend_in_s),
+        ("cruise", start, end, cruise_s),
+        ("blend", end, rest, speed, 0.0, blend_out_s),
+        ("hold", rest, SYNC_HOLD_S),
+    )
+    window_start = SYNC_HOLD_S + blend_in_s
+    return segments, (window_start, window_start + cruise_s)
+
+
+def sync_variant(belt_speed_m_s: float) -> Rung:
+    """`R10.BeltSync@<v>m/s` (order 14, family sync): the tool keeps pace with a point riding the belt.
+
+    WHY the belt off: the rung measures timing against a moving target, and contact would add its own error;
+    the "item" is the reference's own tool point over the cruise, 50 mm above the belt top.
+    """
+    speed = float(belt_speed_m_s)
+    segments, window = sync_segments(speed)
+    script = ToolPathScript(segments)
+    rack = HostTiming()
+    return Rung(
+        id=f"R10.BeltSync@{speed:.2f}m/s",
+        title=f"Belt sync at {speed:.2f} m/s",
+        box=JOINT_TRAJECTORY,
+        family="sync",
+        description=f"A virtual item rides the belt along +x at {speed:.2f} m/s, 50 mm above its top; the "
+        "tool blends up to its speed, keeps pace with it for 200 mm and slows to rest (the belt itself is "
+        "off). Tests how closely the tool keeps time with a moving target.",
+        duration_s=round(script.duration_s + 0.2, 6),
+        inputs=script,
+        scene=Scene(start_q=tuple(float(v) for v in ik(*segments[0][1]))),
+        timing=rack,
+        gates=(
+            Gate(
+                "sync_error_p95_mm",
+                "<=",
+                SYNC_TOLERANCE_MM,
+                f"the tool stays within {SYNC_TOLERANCE_MM:g} mm of a point riding the belt",
+            ),
+            Gate("saturation_share", "<=", 5, "the sync motion stays mostly inside the boards' torque"),
+            _DIVERGED,
+            *timing_gates(rack.rate_hz),
+        ),
+        objective="sync_error_p95_mm",
+        minimize=True,
+        params={
+            "belt_speed_m_s": speed,
+            "sync_start_s": window[0],
+            "sync_end_s": window[1],
+            "item_z_m": SYNC_Z_M,
+            "cruise_mm": 1000.0 * (SYNC_POINTS_X_M[2] - SYNC_POINTS_X_M[1]),
+            "host_rate_hz": rack.rate_hz,
+        },
+        order=14,
+    )
+
+
+def rate_variant(rung: Rung, rate_hz: float) -> Rung:
+    """`rung` with the host at `rate_hz` (every other timing field kept): id `<id>·host<rate>Hz`, its two
+    timing gates replaced by `timing_gates(rate_hz)`, `params["host_rate_hz"] = rate_hz`. Not a ladder
+    rung."""
+    rate = float(rate_hz)
+    if not (math.isfinite(rate) and rate > 0.0):
+        raise ValueError(f"rate_hz must be finite and > 0, got {rate_hz!r}")
+    return dataclasses.replace(
+        rung,
+        id=f"{rung.id}·host{rate:g}Hz",
+        title=f"{rung.title}, host at {rate:g} Hz",
+        timing=dataclasses.replace(rung.timing, rate_hz=rate),
+        gates=(*(g for g in rung.gates if g.metric not in TIMING_METRICS), *timing_gates(rate)),
+        params={**rung.params, "host_rate_hz": rate},
+    )
+
+
+def _respeed(script: Any, move_s: float, rung: Rung) -> Any:
+    """The rung's input script with every move taking `move_s`: a script that can re-time itself (the UR5e
+    path's `respeed`) does; a free-space tool path (R1/R2's) is rebuilt at the new move time."""
+    if callable(getattr(script, "respeed", None)):
+        return script.respeed(move_s)
+    base_move = rung.params.get("move_s")
+    if isinstance(script, ToolPathScript) and script.segments == free_space_segments(float(base_move)):
+        return ToolPathScript(free_space_segments(move_s))
+    raise ValueError(
+        f"speed_variant re-times free-space paths (R1, R2, U1, U2); {rung.id}'s script is not one"
+    )
+
+
+def _home(plant: str) -> np.ndarray:
+    if plant == "ur5e":
+        from robot_controllers.bench.ur5e import UR5E_HOME_Q
+
+        return np.asarray(UR5E_HOME_Q, dtype=float)
+    return np.asarray(HOME_Q, dtype=float)
+
+
+def _tool_positions(plant: str, q: np.ndarray) -> np.ndarray:
+    """(N, 3) tool positions of joint samples on `plant`'s own kinematics."""
+    if plant == "ur5e":
+        from robot_controllers.bench.ur5e import tool_position as ur5e_tool_position
+
+        return ur5e_tool_position(q)
+    from robot_controllers.bench.arm import tool_position
+
+    return tool_position(q)
+
+
+def speed_variant(rung: Rung, move_s: float) -> Rung:
+    """The same free-space path at `move_s` per move (R1, R2, U1, U2): id `<id>·move<ms>ms`, duration =
+    script + 0.6 s (as R1/R2), the base rung's gates, and params `move_s`, `peak_joint_speed_deg_s` and
+    `peak_tool_speed_m_s` measured on the script's own reference. Not a ladder rung."""
+    if "move_s" not in rung.params:
+        raise ValueError(f"{rung.id} has no params['move_s'] to vary")
+    move = float(move_s)
+    if not (math.isfinite(move) and move > 0.0):
+        raise ValueError(f"move_s must be finite and > 0, got {move_s!r}")
+    script = _respeed(rung.inputs, move, rung)
+    start = np.asarray(rung.scene.start_q, dtype=float) if rung.scene.start_q else _home(rung.plant)
+    trajectory = script(start)[0][1]
+    times = np.asarray(trajectory.t, dtype=float)
+    joint_speed = float(np.max(np.abs(np.asarray(trajectory.velocities))))
+    tool = _tool_positions(rung.plant, np.asarray(trajectory.positions))
+    tool_speed = float(np.max(np.linalg.norm(np.gradient(tool, times, axis=0), axis=1)))
+    return dataclasses.replace(
+        rung,
+        id=f"{rung.id}·move{move * 1000:g}ms",
+        title=f"{rung.title}, {move:g} s per move",
+        duration_s=round(script.duration_s + 0.6, 6),
+        inputs=script,
+        params={
+            **rung.params,
+            "move_s": move,
+            "peak_joint_speed_deg_s": math.degrees(joint_speed),
+            "peak_tool_speed_m_s": tool_speed,
+        },
+    )
+
+
+def _ms_text(seconds: float | tuple[float, ...]) -> str:
+    if np.ndim(seconds) == 0:
+        return f"{float(seconds) * 1e3:g}"
+    return "/".join(f"{float(v) * 1e3:g}" for v in seconds)
+
+
+def bus_variant(
+    rung: Rung, command_delay_s: float | tuple[float, ...], jitter_s: float = 0.0
+) -> Rung:
+    """`rung` on another bus: `command_delay_s` (one value, or one per plant joint) and
+    `command_delay_jitter_s = jitter_s`. id `<id>·bus<ms>ms[±<ms>ms]`, a tuple written `<ms>/<ms>/...`. Not a
+    ladder rung."""
+    if np.ndim(command_delay_s) == 0:
+        delay: float | tuple[float, ...] = float(command_delay_s)
+    else:
+        delay = tuple(float(v) for v in command_delay_s)
+    jitter = float(jitter_s)
+    delay_ms = _ms_text(delay)
+    suffix = f"·bus{delay_ms}ms" + (f"±{jitter * 1e3:g}ms" if jitter else "")
+    timing = dataclasses.replace(rung.timing, command_delay_s=delay, command_delay_jitter_s=jitter)
+    return dataclasses.replace(
+        rung,
+        id=f"{rung.id}{suffix}",
+        title=f"{rung.title}, bus {delay_ms} ms" + (f" ± {jitter * 1e3:g} ms" if jitter else ""),
+        timing=timing,
+        params={**rung.params, "command_delay_ms": delay_ms, "command_delay_jitter_ms": jitter * 1e3},
+    )
 
 
 def _move_to_sequence(target: np.ndarray, name: str) -> JointCommandSequence:

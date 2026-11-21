@@ -151,7 +151,7 @@ class Rung:
     id: str
     title: str  # "Belt impact at 0.10 m/s"
     box: Box
-    family: str  # free_space | contact | disturbance | replanning | timing | sequence
+    family: str  # free_space | contact | disturbance | replanning | timing | sequence | sync
     description: str  # two sentences: what happens and what it tests
     duration_s: float
     inputs: InputScript
@@ -162,6 +162,7 @@ class Rung:
     minimize: bool = True
     params: Mapping[str, float | str] = field(default_factory=dict)  # shown on the site and in W&B config
     order: int = 0  # ladder position, simplest first
+    plant: str = "planar_arm"  # the plant run_episode builds for it: planar_arm | ur5e (amendment 4, §4.5)
 
 
 # ── the episode log: what the bench records, what the metrics read ─────────────────────────────────────────

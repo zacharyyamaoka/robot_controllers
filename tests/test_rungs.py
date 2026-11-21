@@ -88,6 +88,11 @@ EXPECTED = {
          ("missed_cycles", "==", 0), ("latency_p99_ms", "<=", 2.0)),
         "tracking_p95_deg",
     ),
+    # amendment 4 (§4.4): the tool keeping pace with a point riding the belt, appended as order 14
+    "R10.BeltSync@0.25m/s": (
+        (("sync_error_p95_mm", "<=", 5.0), ("saturation_share", "<=", 5), ("diverged", "==", 0), *T100),
+        "sync_error_p95_mm",
+    ),
     "S1.MoveTo": (
         (("steps_done", ">=", 2), ("reached_error_deg", "<=", 1.0), ("faults", "==", 0), *T100),
         "sequence_time_s",
@@ -142,9 +147,9 @@ class Spec:
 
 
 def test_the_ladders_have_the_contract_ids_in_order():
-    assert [r.id for r in ladder(JOINT_TRAJECTORY)] == list(EXPECTED)[:13]
-    assert [r.id for r in ladder(JOINT_COMMAND_SEQUENCE)] == list(EXPECTED)[13:]
-    assert [r.order for r in ladder(JOINT_TRAJECTORY)] == list(range(1, 14))
+    assert [r.id for r in ladder(JOINT_TRAJECTORY)] == list(EXPECTED)[:14]
+    assert [r.id for r in ladder(JOINT_COMMAND_SEQUENCE)] == list(EXPECTED)[14:]
+    assert [r.order for r in ladder(JOINT_TRAJECTORY)] == list(range(1, 15))
     assert [r.order for r in ladder(JOINT_COMMAND_SEQUENCE)] == [1, 2, 3]
     assert ladder(POSE_TRAJECTORY) == ()
 
