@@ -859,10 +859,13 @@ unchanged (`source: real` rows in the grade ledger).
 - **Lane A (the barrier, first, robot_controllers `main`)**: §5.1 wiring (`bench/arm_planar.py`, registry use in
   `layouts.py`, `loop.py`, `study.py`, `ur5e.py`), §5.2 (`calibration.py`, `monitor.py`, `HostTiming.command_delay_steps`,
   `HostTiming.from_bus`, `lookahead_from`, `plant.py`), §5.3 per-arm `ModelError` for planar and UR5e (`arm_models.py`,
-  `ur5e.py`), `scaled_board`, CLI `robot-controllers calibrate`. Acceptance: `tests/test_timing_acceptance.py`.
+  `ur5e.py`), `scaled_board`, CLI `robot-controllers calibrate`; and the `Target` type (`bench/targets.py`) with the
+  planar and UR5e targets, including the collision target's hard stop (a `Scene` option every plant honours:
+  `stops: tuple[(joint_index, angle_rad, side), ...]`, a stiff joint-range limit on one side). Acceptance:
+  `tests/test_timing_acceptance.py`.
 - **Lane B1 (in parallel with A, its own worktree, additive files only)**: §5.8 (`bench/fivebar.py`, `bench/pendulum.py`,
   `bench/models/*`), plus their two `ARM_MODULES` lines at merge. Acceptance: `tests/test_arms_acceptance.py`.
-- **Lane B2 (after A lands)**: §5.4–5.7 and §5.9 (`bench/targets.py`, `bench/scenarios.py`, `bench/population.py`,
+- **Lane B2 (after A lands)**: §5.4–5.7 and §5.9 (`bench/scenarios.py`, `bench/population.py`,
   `metrics/collision.py`, `metrics/names.py`, `grade.py`, `recommend.py`, `real/`, CLI `grade` / `recommend`,
   `results/grade/`). Runs the grade once every arm is registered. Acceptance: `tests/test_grade_acceptance.py`.
 - The three acceptance files, `models.py`'s `ModelError` / `DriverCaps`, `timing.py` and `bench/arms.py` are the
