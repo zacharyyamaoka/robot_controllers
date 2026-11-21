@@ -1,0 +1,153 @@
+{
+ "schema": "robot-controllers/real-request-1",
+ "station": "bam_fb",
+ "arm": "bam_fivebar",
+ "owner": "Trajectory Tracking Agent (arm_motion_bench)",
+ "target": {
+  "id": "bam_fivebar/path@nominal",
+  "base_rung": null,
+  "time_scale": 1.0,
+  "peak_joint_speed_deg_s": 37.458809249673216,
+  "what": "Arm_motion_bench's BAM FB workspace v2 dev000 tape at 0.5 (ISO 9283 line + rectangle, bam_ruckig), every time x1 (nominal). Tests tracking on a fixed target at this speed."
+ },
+ "rate_hz": 50.0,
+ "configs": [
+  {
+   "config": "P2",
+   "title": "the trajectory's column (as built), board PD",
+   "effort": "as_built",
+   "feedback": "the boards' PD (fullarm_jtc's gains)",
+   "lookahead_mode": "none",
+   "lookahead_ms": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "lookahead_ms_scalar": 0.0,
+   "lookahead_note": null,
+   "interpolation": "tangent",
+   "interpolation_in_bundle": null
+  },
+  {
+   "config": "P4",
+   "title": "model at plan time, board PD, calibrated lookahead",
+   "effort": "model_at_plan",
+   "feedback": "the boards' PD (fullarm_jtc's gains)",
+   "lookahead_mode": "calibrated",
+   "lookahead_ms": [
+    2.75,
+    11.5,
+    14.0,
+    9.0,
+    11.25,
+    13.5
+   ],
+   "lookahead_ms_scalar": 10.333,
+   "lookahead_note": null,
+   "interpolation": "tangent",
+   "interpolation_in_bundle": null
+  },
+  {
+   "config": "P4s",
+   "title": "model at plan time, board PD, calibrated lookahead, secant_mid_ff",
+   "effort": "model_at_plan",
+   "feedback": "the boards' PD (fullarm_jtc's gains)",
+   "lookahead_mode": "calibrated",
+   "lookahead_ms": [
+    2.75,
+    11.5,
+    14.0,
+    9.0,
+    11.25,
+    13.5
+   ],
+   "lookahead_ms_scalar": 10.333,
+   "lookahead_note": null,
+   "interpolation": "secant_mid_ff",
+   "interpolation_in_bundle": "qd <- (q(t + T) - q(t)) / T and effort <- effort(t + T/2), T = the JTC's tick period"
+  },
+  {
+   "config": "P5s",
+   "title": "model + Coulomb at plan time, board PD, calibrated lookahead, secant_mid_ff",
+   "effort": "model_at_plan + coulomb",
+   "feedback": "the boards' PD (fullarm_jtc's gains)",
+   "lookahead_mode": "calibrated",
+   "lookahead_ms": [
+    2.75,
+    11.5,
+    14.0,
+    9.0,
+    11.25,
+    13.5
+   ],
+   "lookahead_ms_scalar": 10.333,
+   "lookahead_note": null,
+   "interpolation": "secant_mid_ff",
+   "interpolation_in_bundle": "qd <- (q(t + T) - q(t)) / T and effort <- effort(t + T/2), T = the JTC's tick period"
+  }
+ ],
+ "calibration": {
+  "rung": "bam_fivebar/calibration\u00b750Hz\u00b7bus=stagger\u00b7ff\u00b10%\u00b7gains\u00d71",
+  "method": "xcorr",
+  "lookahead": "bus_delay",
+  "lookahead_ms": [
+   2.75,
+   11.5,
+   14.0,
+   9.0,
+   11.25,
+   13.5
+  ],
+  "recipe": "ff=trajectory@trajectory+fb=board_gains@board+interp=secant_mid_ff, zero lookahead",
+  "best_lookahead_ms": [
+   4.25,
+   13.5,
+   17.75,
+   9.75,
+   12.5,
+   14.75
+  ],
+  "bus_delay_ms": [
+   2.75,
+   11.5,
+   14.0,
+   9.0,
+   11.25,
+   13.5
+  ],
+  "datasheet_ms": [
+   1.25,
+   2.5,
+   3.75,
+   5.0,
+   6.25,
+   7.5
+  ],
+  "twin_bus_ms": [
+   2.214286,
+   4.428571,
+   6.642857,
+   8.857143,
+   11.071429,
+   13.285714
+  ],
+  "bus_delay_minus_datasheet_ms": [
+   1.5,
+   9.0,
+   10.25,
+   4.0,
+   5.0,
+   6.0
+  ],
+  "bus_within_datasheet": false,
+  "datasheet_source": "datasheet:mjbots (fdcanusb ~800 Hz, one device)",
+  "why": "xcorr on bam_fivebar/calibration\u00b750Hz\u00b7bus=stagger\u00b7ff\u00b10%\u00b7gains\u00d71 (one run at zero lookahead, each joint's best-aligning shift): measured 4.25/13.50/17.75/9.75/12.50/14.75 ms vs nominal 1.25/2.50/3.75/5.00/6.25/7.50 ms (datasheet:mjbots (fdcanusb ~800 Hz, one device)): off by +3.00/+11.00/+14.00/+4.75/+6.25/+7.25 ms, beyond the 2 ms tolerance",
+  "bus_why": "xcorr on bam_fivebar/calibration\u00b750Hz\u00b7bus=stagger\u00b7ff\u00b10%\u00b7gains\u00d71 (one run at zero lookahead, each joint's best-aligning shift with the friction look-alike fitted out): measured 2.75/11.50/14.00/9.00/11.25/13.50 ms vs nominal 1.25/2.50/3.75/5.00/6.25/7.50 ms (datasheet:mjbots (fdcanusb ~800 Hz, one device)): off by +1.50/+9.00/+10.25/+4.00/+5.00/+6.00 ms, beyond the 2 ms tolerance"
+ },
+ "score_against": "the bundle's q_reference on the JTC's leg clock (robot_controllers.real.import_fullarm)",
+ "logger_ask": "stamp each exchange's start and the order the boards are served in (or each reply's own time): with the exchange's end alone, one run bounds the delay only to one exchange (~17 ms), so the calibration is the sweep",
+ "why": "robot_controllers never drives hardware (CONTRACT \u00a75.9): the rig's owner builds and queues these"
+}
