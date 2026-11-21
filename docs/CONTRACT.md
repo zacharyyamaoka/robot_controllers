@@ -707,7 +707,13 @@ registry. Planar and UR5e move onto it with no behaviour change: both acceptance
     monitor, because the datasheet says nothing about friction;
   - **the best lookahead** (the plain fit, the default): what the controller samples ahead by, because it tracks best
     (UR5e 0.225° vs 0.338° at the true 5.5 ms).
-  The population's "calibrated" lookahead (§5.5) is the best lookahead; every grade row records both.
+  ~~The population's "calibrated" lookahead (§5.5) is the best lookahead~~ **Superseded by the first full grade
+  (2026-11-20, lane B2, 1296 rows):** at 50 Hz with the secant velocity, the plain fit over-advances and the friction-aware
+  bus delay tracks better on 3 of 4 arms (P4s base, tool p95: planar 1.58 → 1.36 mm, UR5e 4.65 → 1.80 mm, pendulum 15.98 →
+  11.61 mm; five-bar a wash, 12.05 vs 12.08 mm). Friction lag is not a pure delay, so sampling ahead by it adds error
+  elsewhere. So the population's "calibrated" lookahead is the **friction-aware bus delay**; every grade row still records
+  both. Known limit: on the pendulum the joint's own lag swamps a 1.25 ms bus (xcorr reads 25 ms plain, 19.75 ms friction-
+  aware; the true-bus lookahead tracks 5.48 mm), so a single high-friction joint should be calibrated by the sweep.
 - **The live monitor** (`monitor.py`: `LagMonitor(expected: BusTiming, *, lookahead_s=0.0, window_s=2.0, step_s=0.5,
   alert_s=0.002, confirm=2)`): pure and streaming. `update(t, q, sent_t, ref_position) -> list[LagEvent]` takes the new
   plant samples (t, q) and the new host ticks (sent_t, ref_position) since the last call. Every `step_s` it estimates each
