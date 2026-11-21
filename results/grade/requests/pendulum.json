@@ -15,58 +15,66 @@
   {
    "config": "P2",
    "title": "the trajectory's column (as built), board PD",
+   "why": "the as-built baseline (the tape's own column, board PD, no lookahead: what the arm runs today); twin at pendulum/path@nominal\u00b750Hz\u00b7bus=datasheet\u00b7ff\u00b110%\u00b7gains\u00d71: tool p95 7.11 mm, joint p95 1.2 deg",
    "effort": "as_built",
-   "feedback": "the boards' PD (fullarm_jtc's gains)",
+   "feedback": "the boards' PD at the station's own gains (fullarm_jtc's on bam_fb)",
    "lookahead_mode": "none",
    "lookahead_ms": [
     0.0
    ],
+   "lookahead_source": "none",
    "lookahead_ms_scalar": 0.0,
    "lookahead_note": null,
    "interpolation": "tangent",
    "interpolation_in_bundle": null
   },
   {
-   "config": "P4",
-   "title": "model at plan time, board PD, calibrated lookahead",
+   "config": "P3s",
+   "title": "model at plan time, board PD, the datasheet's lookahead, secant_mid_ff",
+   "why": "real-safe #1 for accuracy of 12 passing at pendulum/path@nominal\u00b750Hz\u00b7bus=datasheet\u00b7ff\u00b110%\u00b7gains\u00d71: tool p95 5.48 mm, joint p95 0.927 deg",
    "effort": "model_at_plan",
-   "feedback": "the boards' PD (fullarm_jtc's gains)",
-   "lookahead_mode": "calibrated",
+   "feedback": "the boards' PD at the station's own gains (fullarm_jtc's on bam_fb)",
+   "lookahead_mode": "nominal",
    "lookahead_ms": [
-    20.75
+    1.25
    ],
-   "lookahead_ms_scalar": 20.75,
+   "lookahead_source": "datasheet:mjbots (fdcanusb ~800 Hz, one device)",
+   "lookahead_ms_scalar": 1.25,
+   "lookahead_note": null,
+   "interpolation": "secant_mid_ff",
+   "interpolation_in_bundle": "qd <- (q(t + T) - q(t)) / T and effort <- effort(t + T/2), T = the JTC's tick period"
+  },
+  {
+   "config": "P2s",
+   "title": "the trajectory's column (as built), board PD, secant_mid_ff",
+   "why": "real-safe #2 for accuracy of 12 passing at pendulum/path@nominal\u00b750Hz\u00b7bus=datasheet\u00b7ff\u00b110%\u00b7gains\u00d71: tool p95 6.24 mm, joint p95 1.05 deg",
+   "effort": "as_built",
+   "feedback": "the boards' PD at the station's own gains (fullarm_jtc's on bam_fb)",
+   "lookahead_mode": "none",
+   "lookahead_ms": [
+    0.0
+   ],
+   "lookahead_source": "none",
+   "lookahead_ms_scalar": 0.0,
+   "lookahead_note": null,
+   "interpolation": "secant_mid_ff",
+   "interpolation_in_bundle": "qd <- (q(t + T) - q(t)) / T and effort <- effort(t + T/2), T = the JTC's tick period"
+  },
+  {
+   "config": "P3",
+   "title": "model at plan time, board PD, the datasheet's lookahead",
+   "why": "real-safe #3 for accuracy of 12 passing at pendulum/path@nominal\u00b750Hz\u00b7bus=datasheet\u00b7ff\u00b110%\u00b7gains\u00d71: tool p95 6.38 mm, joint p95 1.08 deg",
+   "effort": "model_at_plan",
+   "feedback": "the boards' PD at the station's own gains (fullarm_jtc's on bam_fb)",
+   "lookahead_mode": "nominal",
+   "lookahead_ms": [
+    1.25
+   ],
+   "lookahead_source": "datasheet:mjbots (fdcanusb ~800 Hz, one device)",
+   "lookahead_ms_scalar": 1.25,
    "lookahead_note": null,
    "interpolation": "tangent",
    "interpolation_in_bundle": null
-  },
-  {
-   "config": "P4s",
-   "title": "model at plan time, board PD, calibrated lookahead, secant_mid_ff",
-   "effort": "model_at_plan",
-   "feedback": "the boards' PD (fullarm_jtc's gains)",
-   "lookahead_mode": "calibrated",
-   "lookahead_ms": [
-    20.75
-   ],
-   "lookahead_ms_scalar": 20.75,
-   "lookahead_note": null,
-   "interpolation": "secant_mid_ff",
-   "interpolation_in_bundle": "qd <- (q(t + T) - q(t)) / T and effort <- effort(t + T/2), T = the JTC's tick period"
-  },
-  {
-   "config": "P5s",
-   "title": "model + Coulomb at plan time, board PD, calibrated lookahead, secant_mid_ff",
-   "effort": "model_at_plan + coulomb",
-   "feedback": "the boards' PD (fullarm_jtc's gains)",
-   "lookahead_mode": "calibrated",
-   "lookahead_ms": [
-    20.75
-   ],
-   "lookahead_ms_scalar": 20.75,
-   "lookahead_note": null,
-   "interpolation": "secant_mid_ff",
-   "interpolation_in_bundle": "qd <- (q(t + T) - q(t)) / T and effort <- effort(t + T/2), T = the JTC's tick period"
   }
  ],
  "calibration": {

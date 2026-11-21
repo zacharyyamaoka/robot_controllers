@@ -305,15 +305,24 @@ def test_the_real_import_keeps_the_tape_the_board_frame_and_the_boards_limit_fla
     np.testing.assert_allclose(log.tau_fb_board + log.tau_ff, log.tau, rtol=0, atol=1e-12)
 
 
-def test_a_run_request_names_the_four_real_safe_configs_in_bundle_terms():
+def test_a_run_request_is_the_as_built_config_and_the_top_three_real_safe_ones_in_bundle_terms():
+    from robot_controllers.bench.population import REAL_SAFE
+    from robot_controllers.grade import load_ledger, rank
     from robot_controllers.real.requests import run_request
 
-    request = run_request("bam_fivebar", ledger={"rows": []})
+    ledger = load_ledger()
+    request = run_request("bam_fivebar", ledger=ledger)
     assert request["station"] == "bam_fb" and request["rate_hz"] == 50.0
-    assert [c["config"] for c in request["configs"]] == ["P2", "P4", "P4s", "P5s"]
-    assert [c["effort"] for c in request["configs"]] == ["as_built", "model_at_plan", "model_at_plan",
-                                                          "model_at_plan + coulomb"]
+    chosen = [c["config"] for c in request["configs"]]
+    base = [r for r in ledger["rows"] if r.get("source") == "sim" and r["arm"] == "bam_fivebar" and r["axis"] == "base"]
+    best = [r["config"] for r in rank([r for r in base if r["config"] in REAL_SAFE], "accuracy") if r["config"] != "P2"]
+    assert chosen == ["P2", *best[:3]] and all(c in REAL_SAFE for c in chosen)
+    assert all(c["why"] for c in request["configs"])
+    assert request["configs"][0]["effort"] == "as_built" and request["configs"][0]["lookahead_ms"] == [0.0] * 6
+    explicit = run_request("bam_fivebar", configs=("P5s", "P7"), ledger=ledger)
+    assert [c["effort"] for c in explicit["configs"]] == ["model_at_plan + coulomb", "model_at_plan"]
+    assert "computed-torque" in explicit["configs"][1]["feedback"]
     with pytest.raises(ValueError):
-        run_request("bam_fivebar", configs=("P10",))
+        run_request("bam_fivebar", configs=("P10",), ledger=ledger)
     with pytest.raises(ValueError):
-        run_request("planar_arm")
+        run_request("planar_arm", ledger=ledger)

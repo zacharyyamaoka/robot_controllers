@@ -54,8 +54,11 @@ from robot_controllers.timing import BusTiming, lookahead_from
 POPULATION: tuple[str, ...] = (
     "P1", "P2", "P2s", "P3", "P3s", "P4", "P4s", "P5", "P5s", "P6", "P6s", "P7", "P7s", "P8", "P9", "P10",
 )
-# WHY only these on a real arm (§5.5, §5.9): every host-side feedback law saturated the boards at 50 Hz in every sim
-REAL_SAFE: tuple[str, ...] = ("P2", "P4", "P4s", "P5s")
+# WHY these on a real arm (§5.5 as amended after the grade, 2026-11-20): every config whose feedback the board closes
+# and that has a feed-forward. Never P1 (no feed-forward: the arm sags) nor P8-P10 (feedback on the host, which
+# saturated the boards at 50 Hz in every sim). The first list (P2, P4, P4s, P5s) was a guess that excluded the grade's
+# best accuracy on three arms (P7 / P7s: gains re-sent each tick, still closed by the board) and on the pendulum (P3s).
+REAL_SAFE: tuple[str, ...] = ("P2", "P2s", "P3", "P3s", "P4", "P4s", "P5", "P5s", "P6", "P6s", "P7", "P7s")
 LOOKAHEAD_MODES: tuple[str, ...] = ("none", "nominal", "calibrated")
 # The calibration recipe (the CLI's `robot-controllers calibrate`): the trajectory's effort, board PD, secant_mid_ff
 CALIBRATION_LAYOUT: tuple[str, str, str, str, str] = (

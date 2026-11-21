@@ -15,8 +15,9 @@
   {
    "config": "P2",
    "title": "the trajectory's column (as built), board PD",
+   "why": "the as-built baseline (the tape's own column, board PD, no lookahead: what the arm runs today); twin at bam_fivebar/path@nominal\u00b750Hz\u00b7bus=datasheet\u00b7ff\u00b110%\u00b7gains\u00d71: tool p95 12.2 mm, joint p95 0.794 deg",
    "effort": "as_built",
-   "feedback": "the boards' PD (fullarm_jtc's gains)",
+   "feedback": "the boards' PD at the station's own gains (fullarm_jtc's on bam_fb)",
    "lookahead_mode": "none",
    "lookahead_ms": [
     0.0,
@@ -26,16 +27,18 @@
     0.0,
     0.0
    ],
+   "lookahead_source": "none",
    "lookahead_ms_scalar": 0.0,
    "lookahead_note": null,
    "interpolation": "tangent",
    "interpolation_in_bundle": null
   },
   {
-   "config": "P4",
-   "title": "model at plan time, board PD, calibrated lookahead",
+   "config": "P7",
+   "title": "model at plan time, computed-torque gains re-sent each tick, calibrated lookahead",
+   "why": "real-safe #1 for accuracy of 12 passing at bam_fivebar/path@nominal\u00b750Hz\u00b7bus=datasheet\u00b7ff\u00b110%\u00b7gains\u00d71: tool p95 1.5 mm, joint p95 0.613 deg",
    "effort": "model_at_plan",
-   "feedback": "the boards' PD (fullarm_jtc's gains)",
+   "feedback": "computed-torque gains re-sent with every command: kp = M_jj(q_ref)\u00b7\u03c9n\u00b2, kd = 2\u03b6\u03c9n\u00b7M_jj(q_ref) (\u03b6 0.9, 6.78 Hz), as moteus kp_scale / kd_scale over the boards' configured gains",
    "lookahead_mode": "calibrated",
    "lookahead_ms": [
     2.75,
@@ -45,16 +48,18 @@
     11.25,
     13.5
    ],
+   "lookahead_source": "the twin's calibrated bus delay at 50 Hz on the stagger bus (\u00a75.2)",
    "lookahead_ms_scalar": 10.333,
    "lookahead_note": null,
    "interpolation": "tangent",
    "interpolation_in_bundle": null
   },
   {
-   "config": "P4s",
-   "title": "model at plan time, board PD, calibrated lookahead, secant_mid_ff",
+   "config": "P7s",
+   "title": "model at plan time, computed-torque gains re-sent each tick, calibrated lookahead, secant_mid_ff",
+   "why": "real-safe #2 for accuracy of 12 passing at bam_fivebar/path@nominal\u00b750Hz\u00b7bus=datasheet\u00b7ff\u00b110%\u00b7gains\u00d71: tool p95 1.54 mm, joint p95 0.605 deg",
    "effort": "model_at_plan",
-   "feedback": "the boards' PD (fullarm_jtc's gains)",
+   "feedback": "computed-torque gains re-sent with every command: kp = M_jj(q_ref)\u00b7\u03c9n\u00b2, kd = 2\u03b6\u03c9n\u00b7M_jj(q_ref) (\u03b6 0.9, 6.78 Hz), as moteus kp_scale / kd_scale over the boards' configured gains",
    "lookahead_mode": "calibrated",
    "lookahead_ms": [
     2.75,
@@ -64,16 +69,18 @@
     11.25,
     13.5
    ],
+   "lookahead_source": "the twin's calibrated bus delay at 50 Hz on the stagger bus (\u00a75.2)",
    "lookahead_ms_scalar": 10.333,
    "lookahead_note": null,
    "interpolation": "secant_mid_ff",
    "interpolation_in_bundle": "qd <- (q(t + T) - q(t)) / T and effort <- effort(t + T/2), T = the JTC's tick period"
   },
   {
-   "config": "P5s",
-   "title": "model + Coulomb at plan time, board PD, calibrated lookahead, secant_mid_ff",
+   "config": "P5",
+   "title": "model + Coulomb at plan time, board PD, calibrated lookahead",
+   "why": "real-safe #3 for accuracy of 12 passing at bam_fivebar/path@nominal\u00b750Hz\u00b7bus=datasheet\u00b7ff\u00b110%\u00b7gains\u00d71: tool p95 4.79 mm, joint p95 0.421 deg",
    "effort": "model_at_plan + coulomb",
-   "feedback": "the boards' PD (fullarm_jtc's gains)",
+   "feedback": "the boards' PD at the station's own gains (fullarm_jtc's on bam_fb)",
    "lookahead_mode": "calibrated",
    "lookahead_ms": [
     2.75,
@@ -83,10 +90,11 @@
     11.25,
     13.5
    ],
+   "lookahead_source": "the twin's calibrated bus delay at 50 Hz on the stagger bus (\u00a75.2)",
    "lookahead_ms_scalar": 10.333,
    "lookahead_note": null,
-   "interpolation": "secant_mid_ff",
-   "interpolation_in_bundle": "qd <- (q(t + T) - q(t)) / T and effort <- effort(t + T/2), T = the JTC's tick period"
+   "interpolation": "tangent",
+   "interpolation_in_bundle": null
   }
  ],
  "calibration": {
