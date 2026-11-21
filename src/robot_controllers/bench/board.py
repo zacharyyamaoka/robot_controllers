@@ -22,7 +22,9 @@ Per joint, every tick (fw bldc_servo_position.h, as `bam_pid_tunning.plants.serv
   (the `tag` it was scheduled with; -1 = the hold `reset` latched).
 
 A command reaches a board through `schedule(command, latch_t)` and takes effect on the first tick at or after
-latch_t (the bus delay is the caller's: the plant schedules at sent time + command delay). A joint the command
+latch_t (the bus delay is the caller's: the plant schedules at sent time + command delay). `latch_t` may be one
+time per joint (amendment 4, §4.2: a bus that serves its boards in turn); each joint's commands latch first in,
+first out. A joint the command
 does not name gets nothing, so its watchdog keeps counting, as on a real bus. `defines` (joint -> rad, a
 homing controller's "your position is now this", moteus set_output_exact) shift that board's position frame on
 the same tick: the reported position jumps to the value, the joint does not move.
@@ -138,7 +140,10 @@ class ServoBoards:
         joints = len(self.joint_names)
         q = [float(v) for v in q]
         feedforward = [0.0] * joints if feedforward is None else [float(v) for v in feedforward]
-        self._pending: deque[tuple[float, dict[int, _Latched]]] = deque()
+        # per joint, the commands still to latch: (latch_t, its share or None, a define or None), in order
+        self._pending: list[deque[tuple[float, _Latched | None, float | None]]] = [
+            deque() for _ in range(joints)
+        ]
         self._latched = [
             _Latched(q[j], 0.0, feedforward[j], self._kp[j], self._kd[j], self._cap[j], -1)
             for j in range(joints)
@@ -171,13 +176,21 @@ class ServoBoards:
     def schedule(
         self,
         command: ServoCommand,
-        latch_t: float,
+        latch_t: float | Sequence[float],
         defines: Mapping[str, float] | None = None,
         *,
         tag: int = -1,
     ) -> None:
-        """Queue `command` (and any position `defines`) to latch at `latch_t` (s). Joints it names that these
-        boards do not drive are ignored. `tag` is reported in `latched_tag` while the command runs."""
+        """Queue `command` (and any position `defines`) to latch at `latch_t` (s), one time for every joint or
+        one per joint in these boards' order. Joints it names that these boards do not drive are ignored.
+        `tag` is reported in `latched_tag` while the command runs. A joint's commands must latch in order."""
+        joints = len(self.joint_names)
+        if isinstance(latch_t, (int, float)):
+            latch = [float(latch_t)] * joints
+        else:
+            latch = [float(v) for v in latch_t]
+            if len(latch) != joints:
+                raise ValueError(f"latch_t has {len(latch)} times for {joints} joints")
         shares: dict[int, _Latched] = {}
         for i, name in enumerate(command.name):
             j = self._index.get(name)
@@ -197,9 +210,14 @@ class ServoBoards:
         frame_shifts = {
             self._index[name]: float(value) for name, value in (defines or {}).items() if name in self._index
         }
-        if self._pending and latch_t < self._pending[-1][0]:
-            raise ValueError(f"commands must latch in order: {latch_t} is before {self._pending[-1][0]}")
-        self._pending.append((float(latch_t), shares, frame_shifts))
+        for j in sorted(set(shares) | set(frame_shifts)):
+            queue = self._pending[j]
+            if queue and latch[j] < queue[-1][0]:
+                raise ValueError(
+                    f"commands must latch in order: {latch[j]} is before {queue[-1][0]} "
+                    f"({self.joint_names[j]})"
+                )
+            queue.append((latch[j], shares.get(j), frame_shifts.get(j)))
 
     # ── one tick ───────────────────────────────────────────────────────────────────────────────────────────
 
@@ -207,19 +225,19 @@ class ServoBoards:
         """One board tick at time `t` (s) with the joints truly at `q_true` (rad) at that instant; returns
         tau."""
         dt, alpha = self._dt, self._alpha
-        pending = self._pending
         fresh: set[int] = set()
-        while pending and pending[0][0] <= t + LATCH_TOLERANCE_S:
-            latch_t, shares, frame_shifts = pending.popleft()
-            for j, share in shares.items():
-                self._latched[j] = share
-                self._control_position[j] = share.position
-                self._last_latch_t[j] = latch_t
-                fresh.add(j)
-                if self.mode[j] == WATCHDOG_MODE:
-                    self.mode[j] = OK_MODE
-            for j, value in frame_shifts.items():
-                self._define_due[j] = value
+        for j, queue in enumerate(self._pending):
+            while queue and queue[0][0] <= t + LATCH_TOLERANCE_S:
+                latch_t, share, frame_shift = queue.popleft()
+                if share is not None:
+                    self._latched[j] = share
+                    self._control_position[j] = share.position
+                    self._last_latch_t[j] = latch_t
+                    fresh.add(j)
+                    if self.mode[j] == WATCHDOG_MODE:
+                        self.mode[j] = OK_MODE
+                if frame_shift is not None:
+                    self._define_due[j] = frame_shift
         self.watchdog_entries = []
         watchdog_s = self.config.watchdog_s
         for j in range(len(self.joint_names)):

@@ -25,18 +25,50 @@ from robot_controllers.core import Box
 
 @dataclass(frozen=True)
 class HostTiming:
-    """The host loop and the bus. Defaults are the rack: 100 Hz, ~7 ms round trip (bam_fivebar RACK_BOARD)."""
+    """The host loop and the bus. Defaults are the rack: 100 Hz, ~7 ms round trip (bam_fivebar RACK_BOARD).
+
+    Amendment 4 (§4.2): `command_delay_s` may be one delay per plant joint (one adapter serves its boards in
+    turn, so each joint's part of a command latches at sent + its own delay), and `command_delay_jitter_s`
+    adds one draw u ~ U(-jitter, +jitter) to every joint's delay of each command, from the plant's own
+    generator seeded from the episode seed (the host's wake-jitter draws never shift; the plant rounds u to
+    whole board ticks). Latches stay first in, first out per joint, as on a CAN bus. The defaults are the
+    episode as before.
+    """
 
     rate_hz: float = 100.0
-    command_delay_s: float = 0.0055  # host sends -> the board latches it
+    command_delay_s: float | tuple[float, ...] = 0.0055  # host sends -> the board latches it (or per joint)
     reply_delay_s: float = 0.0015  # the board samples -> the host has it
     jitter_s: float = 0.0  # std of the host's wake jitter (gaussian, clipped to +-period/2), seeded
     stalls: tuple[tuple[float, float], ...] = ()  # (start_s, duration_s): the host does not wake in that window
     include_compute: bool = True  # send time = wake time + the measured tick compute time
+    command_delay_jitter_s: float = 0.0  # +- bound of the uniform draw added to each command's delay (s)
+
+    def __post_init__(self) -> None:
+        delay = self.command_delay_s
+        if np.ndim(delay) == 0:
+            values: tuple[float, ...] = (float(delay),)
+        else:
+            values = tuple(float(v) for v in delay)
+            object.__setattr__(self, "command_delay_s", values)  # a list becomes a (hashable) tuple
+        if not values or not all(math.isfinite(v) and v >= 0.0 for v in values):
+            raise ValueError(f"command_delay_s must be finite and >= 0 s, got {delay!r}")
+        jitter = float(self.command_delay_jitter_s)
+        if not (math.isfinite(jitter) and jitter >= 0.0):
+            raise ValueError(f"command_delay_jitter_s must be finite and >= 0 s, got {jitter!r}")
 
     @property
     def period_s(self) -> float:
         return 1.0 / self.rate_hz
+
+    def command_delays(self, joint_count: int) -> tuple[float, ...]:
+        """Each joint's command delay (s); a per-joint tuple of another length raises ValueError."""
+        if np.ndim(self.command_delay_s) == 0:
+            return (float(self.command_delay_s),) * joint_count
+        if len(self.command_delay_s) != joint_count:
+            raise ValueError(
+                f"command_delay_s has {len(self.command_delay_s)} values for {joint_count} plant joints"
+            )
+        return tuple(self.command_delay_s)
 
 
 @dataclass(frozen=True)

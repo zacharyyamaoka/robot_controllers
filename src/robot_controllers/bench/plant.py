@@ -16,6 +16,12 @@ encoders are settled.
 
 Time is simulated seconds since the episode start; the board samples at k * dt, the host gets a sample
 `reply_delay_s` after it was taken, and a command latches `command_delay_s` after it was sent (HostTiming).
+
+The bus (amendment 4, §4.2) is `ServoPlant`'s, shared with every plant behind the same boards (the UR5e's
+too): each joint's part of a command latches at sent + its own delay, plus one seeded uniform draw per
+command (in whole board ticks) when the timing has `command_delay_jitter_s`, first in first out per joint (a
+command that would latch before the one sent before it latches on the same tick). With the defaults it is the
+bus as before.
 """
 
 from __future__ import annotations
@@ -29,98 +35,116 @@ import numpy as np
 from robot_msgs.control import ServoCommand, ServoState
 from robot_msgs.std import Header
 
-from robot_controllers.bench.arm import ARM, HOME_Q, JOINT_NAMES, ArmConfig, build_model, nominal_dynamics
+from robot_controllers.bench.arm import (
+    ARM,
+    HOME_Q,
+    JOINT_NAMES,
+    ArmConfig,
+    build_model,
+    nominal_dynamics,
+    tool_position,
+)
 from robot_controllers.bench.board import BoardConfig, ServoBoards
 from robot_controllers.bench.types import HostTiming, Scene
 
 PREROLL_S = 0.02  # unrecorded hold before t = 0 (s): longer than the reply delay and the encoder's settling
 TIME_TOLERANCE_S = 1e-9
+# WHY a fixed second entropy word: the bus jitter draws come from the episode seed but must never share a
+# stream with the host loop's wake jitter (np.random.default_rng(seed)), so adding bus jitter shifts no wake.
+BUS_JITTER_STREAM = 0xB05_2026
 
 
-class PlanarArmPlant:
-    """The `planar_arm` plant: MuJoCo arm + belt + one moteus board model per joint."""
+class ServoPlant:
+    """What every plant behind the moteus board model shares: the bus (`read`, `write`), the per-step record
+    (`samples`) and MuJoCo's divergence warnings. A subclass builds the model, steps it (`advance`) and knows
+    its own kinematics (`tool_position`)."""
 
-    name = "planar_arm"
-    joint_names: tuple[str, ...] = JOINT_NAMES
+    name = "servo_plant"
+    joint_names: tuple[str, ...] = ()
 
-    def __init__(self, *, board_config: BoardConfig | None = None, arm: ArmConfig = ARM) -> None:
-        self.arm = arm
-        self.board_config = board_config or BoardConfig()
-        if abs(self.board_config.dt_s - arm.physics_dt_s) > 1e-12:
+    def __init__(self, board_config: BoardConfig, physics_dt_s: float) -> None:
+        self.board_config = board_config
+        if abs(self.board_config.dt_s - physics_dt_s) > 1e-12:
             raise ValueError(
                 "the boards tick once per physics step: BoardConfig.rate_hz must be 1 / physics_dt_s"
             )
         self.boards = ServoBoards(self.joint_names, self.board_config)
-        self._dt = arm.physics_dt_s
+        self._dt = physics_dt_s
         self._model = None
         self._data = None
-
-    @property
-    def home_q(self) -> tuple[float, ...]:
-        return HOME_Q
 
     @property
     def now(self) -> float:
         """The time the plant has been advanced to (s)."""
         return self._now
 
-    # ── episode setup ──────────────────────────────────────────────────────────────────────────────────────
+    def _reset_bus(self, seed: int, timing: HostTiming) -> None:
+        self._delays = timing.command_delays(len(self.joint_names))
+        self._delay_jitter = float(timing.command_delay_jitter_s)
+        self._bus_rng = np.random.default_rng([int(seed), BUS_JITTER_STREAM])
+        self._last_latch = [-math.inf] * len(self.joint_names)
 
-    def reset(
-        self,
-        scene: Scene,
-        seed: int = 0,
-        *,
-        timing: HostTiming | None = None,
-        duration_s: float = 5.0,
-    ) -> None:
-        """A new episode: build (or reuse) the scene's model, put the arm at `scene.start_q` (or home) at
-        rest, the boards holding it, and run the pre-roll. `seed` is kept for the record: nothing in this
-        plant is random (no sensor noise); the loop's jitter has its own seed."""
-        import mujoco
+    def tool_position(self, q: Any) -> np.ndarray:
+        raise NotImplementedError
 
-        self._mujoco = mujoco
-        self.scene = scene
-        self.seed = int(seed)
-        self.timing = timing or HostTiming()
-        self._model, self.contact_calibration = build_model(scene, self.arm)
-        model = self._model
-        self._data = data = mujoco.MjData(model)
-        start_q = np.asarray(scene.start_q if scene.start_q is not None else self.home_q, dtype=float)
-        if start_q.shape != (2,):
-            raise ValueError(f"start_q must be 2 joint angles, got {start_q}")
-        self.start_q = tuple(float(v) for v in start_q)
-        data.qpos[:2] = start_q
-        data.qvel[:] = 0.0
-        self._belt_dof = model.joint("belt").dofadr[0] if scene.belt else None
-        self._belt_speed = float(scene.belt_speed_m_s) if scene.belt else 0.0
-        if self._belt_dof is not None:
-            data.qvel[self._belt_dof] = self._belt_speed
-        mujoco.mj_forward(model, data)
-        self._tool_body = model.body("tool").id
-        self._tool_geom = model.geom("tool").id
-        self._pushes = tuple(
-            (float(p.start_s), float(p.start_s + p.duration_s), tuple(float(f) for f in p.force_n))
-            for p in scene.pushes
+    # ── the bus ────────────────────────────────────────────────────────────────────────────────────────────
+
+    def read(self) -> ServoState:
+        """The newest board sample taken at or before now - reply_delay, stamped with its sample time.
+
+        `seq` counts distinct samples served: it advances by one per reply that carries a new sample, and
+        repeats when the host reads again before a newer sample has arrived (a stale reply).
+        """
+        target = self._now - self.timing.reply_delay_s
+        k = min(int(math.floor(target / self._dt + TIME_TOLERANCE_S)), self._k - 1)
+        k = max(k, self._first_k)
+        if k != self._last_sample_k:
+            self._seq += 1
+            self._last_sample_k = k
+        row = k - self._first_k
+        joints = len(self.joint_names)
+        return ServoState(
+            name=self.joint_names,
+            position=self._sample_q[row].copy(),
+            velocity=self._sample_qd[row].copy(),
+            effort=self._sample_tau[row].copy(),
+            fault=np.zeros(joints, dtype=np.int64),
+            seq=self._seq,
+            header=Header(stamp=k * self._dt, frame_id=self.name),
         )
-        self._push_active = [False] * len(self._pushes)
-        self._push_done = [False] * len(self._pushes)
-        self._normal_force = 0.0  # last step's belt normal force on the tool (N): what the friction uses
-        self._touched = False
-        self._warnings_seen = self._warning_count()
-        self.events: list[dict[str, Any]] = []
 
-        preroll_ticks = int(round(PREROLL_S / self._dt))
-        self._first_k = -preroll_ticks
-        self._k = self._first_k
-        hold_feedforward = nominal_dynamics(start_q, np.zeros(2), np.zeros(2), self.arm)
-        self.boards.reset(self._first_k * self._dt, start_q, feedforward=hold_feedforward)
-        self._allocate(preroll_ticks + int(math.ceil(duration_s / self._dt)) + 8)
-        self._last_sample_k: int | None = None
-        self._seq = 0
-        self._writes = 0  # commands written this episode: the tag the boards report while each one runs
-        self._now = self._first_k * self._dt
-        self.advance(0.0)
+    def write(
+        self, command: ServoCommand, defines: Mapping[str, float] | None = None
+    ) -> float | tuple[float, ...]:
+        """Send `command` (its `header.stamp` = when it went on the bus) and any position `defines` (joint ->
+        rad, a homing step's set_output_exact); returns the time they latch on the boards (one per joint when
+        the joints' latches differ).
+
+        Each write is numbered 0, 1, ... in order; `latched_tick` in the samples is that number for the
+        command each board ran (-1 = the pre-roll hold), so a host-tick row (one per write) maps onto the
+        physics steps."""
+        sent = float(command.header.stamp)
+        jitter = 0.0
+        if self._delay_jitter > 0.0:
+            draw = float(self._bus_rng.uniform(-self._delay_jitter, self._delay_jitter))
+            # WHY whole board ticks: the send time carries the tick's measured CPU time, which differs run to
+            # run by microseconds. A continuous draw puts latches anywhere in a 0.25 ms board tick, so that
+            # noise moved 8-20 of R2's ~540 latches to the next tick in every repeat run (measured 2026-11-20)
+            # and the same seed was not the same episode. Rounded to the tick a board can resolve anyway (and
+            # kept inside +-jitter), a seed fixes every latch; a jitter under one tick has no effect.
+            bound = math.floor(self._delay_jitter / self._dt + 1e-9)
+            jitter = min(max(round(draw / self._dt), -bound), bound) * self._dt
+        latch = []
+        for j, delay in enumerate(self._delays):
+            # WHY max with the previous latch: a CAN bus delivers in order, so a command that would arrive
+            # before the one sent ahead of it waits for it and latches on the same board tick
+            at = max(sent + (delay + jitter if jitter else delay), self._last_latch[j])
+            latch.append(at)
+        self._last_latch = latch
+        uniform = all(at == latch[0] for at in latch)
+        self.boards.schedule(command, latch[0] if uniform else latch, defines, tag=self._writes)
+        self._writes += 1
+        return latch[0] if uniform else tuple(latch)
 
     def _allocate(self, rows: int) -> None:
         joints = len(self.joint_names)
@@ -182,43 +206,118 @@ class PlanarArmPlant:
             )
         )
 
-    # ── the bus ────────────────────────────────────────────────────────────────────────────────────────────
+    def _check_divergence(self) -> None:
+        warnings = self._warning_count()
+        if warnings > self._warnings_seen:
+            # MuJoCo resets the state on a non-finite or exploding acceleration; the episode is no longer
+            # physical
+            self._warnings_seen = warnings
+            self.events.append(
+                {"t": self._now, "kind": "diverged", "why": "MuJoCo reset the state (bad qacc/qvel/qpos)"}
+            )
 
-    def read(self) -> ServoState:
-        """The newest board sample taken at or before now - reply_delay, stamped with its sample time.
+    # ── the record ─────────────────────────────────────────────────────────────────────────────────────────
 
-        `seq` counts distinct samples served: it advances by one per reply that carries a new sample, and
-        repeats when the host reads again before a newer sample has arrived (a stale reply).
-        """
-        target = self._now - self.timing.reply_delay_s
-        k = min(int(math.floor(target / self._dt + TIME_TOLERANCE_S)), self._k - 1)
-        k = max(k, self._first_k)
-        if k != self._last_sample_k:
-            self._seq += 1
-            self._last_sample_k = k
-        row = k - self._first_k
-        joints = len(self.joint_names)
-        return ServoState(
-            name=self.joint_names,
-            position=self._sample_q[row].copy(),
-            velocity=self._sample_qd[row].copy(),
-            effort=self._sample_tau[row].copy(),
-            fault=np.zeros(joints, dtype=np.int64),
-            seq=self._seq,
-            header=Header(stamp=k * self._dt, frame_id=self.name),
+    @property
+    def sample_count(self) -> int:
+        return max(self._k, 0)
+
+    def samples(self) -> dict[str, np.ndarray]:
+        """The plant rows recorded so far (t >= 0), copies, keyed as EpisodeLog's plant fields."""
+        rows = self.sample_count
+        return {
+            "t": self._t[:rows].copy(),
+            "q": self._q[:rows].copy(),
+            "qd": self._qd[:rows].copy(),
+            "tau": self._tau[:rows].copy(),
+            "at_cap": self._at_cap[:rows].copy(),
+            "board_mode": self._mode[:rows].copy(),
+            "tool_pos": self._tool_pos[:rows].copy(),
+            "contact_force": self._contact_force[:rows].copy(),
+            "in_contact": self._in_contact[:rows].copy(),
+            "external_force": self._external_force[:rows].copy(),
+            "tau_ff": self._tau_ff[:rows].copy(),
+            "tau_fb_board": self._tau_fb_board[:rows].copy(),
+            "latched_tick": self._latched_tick[:rows].copy(),
+        }
+
+
+class PlanarArmPlant(ServoPlant):
+    """The `planar_arm` plant: MuJoCo arm + belt + one moteus board model per joint."""
+
+    name = "planar_arm"
+    joint_names: tuple[str, ...] = JOINT_NAMES
+
+    def __init__(self, *, board_config: BoardConfig | None = None, arm: ArmConfig = ARM) -> None:
+        self.arm = arm
+        super().__init__(board_config or BoardConfig(), arm.physics_dt_s)
+
+    @property
+    def home_q(self) -> tuple[float, ...]:
+        return HOME_Q
+
+    def tool_position(self, q: Any) -> np.ndarray:
+        """The tool centre (x, y, z) for joint angles `q`, (2,) -> (3,), (N, 2) -> (N, 3): the arm's fk."""
+        return tool_position(q, self.arm)
+
+    # ── episode setup ──────────────────────────────────────────────────────────────────────────────────────
+
+    def reset(
+        self,
+        scene: Scene,
+        seed: int = 0,
+        *,
+        timing: HostTiming | None = None,
+        duration_s: float = 5.0,
+    ) -> None:
+        """A new episode: build (or reuse) the scene's model, put the arm at `scene.start_q` (or home) at
+        rest, the boards holding it, and run the pre-roll. `seed` is kept for the record: nothing in this
+        plant is random (no sensor noise); the loop's jitter has its own seed."""
+        import mujoco
+
+        self._mujoco = mujoco
+        self.scene = scene
+        self.seed = int(seed)
+        self.timing = timing or HostTiming()
+        self._reset_bus(seed, self.timing)
+        self._model, self.contact_calibration = build_model(scene, self.arm)
+        model = self._model
+        self._data = data = mujoco.MjData(model)
+        start_q = np.asarray(scene.start_q if scene.start_q is not None else self.home_q, dtype=float)
+        if start_q.shape != (2,):
+            raise ValueError(f"start_q must be 2 joint angles, got {start_q}")
+        self.start_q = tuple(float(v) for v in start_q)
+        data.qpos[:2] = start_q
+        data.qvel[:] = 0.0
+        self._belt_dof = model.joint("belt").dofadr[0] if scene.belt else None
+        self._belt_speed = float(scene.belt_speed_m_s) if scene.belt else 0.0
+        if self._belt_dof is not None:
+            data.qvel[self._belt_dof] = self._belt_speed
+        mujoco.mj_forward(model, data)
+        self._tool_body = model.body("tool").id
+        self._tool_geom = model.geom("tool").id
+        self._pushes = tuple(
+            (float(p.start_s), float(p.start_s + p.duration_s), tuple(float(f) for f in p.force_n))
+            for p in scene.pushes
         )
+        self._push_active = [False] * len(self._pushes)
+        self._push_done = [False] * len(self._pushes)
+        self._normal_force = 0.0  # last step's belt normal force on the tool (N): what the friction uses
+        self._touched = False
+        self._warnings_seen = self._warning_count()
+        self.events: list[dict[str, Any]] = []
 
-    def write(self, command: ServoCommand, defines: Mapping[str, float] | None = None) -> float:
-        """Send `command` (its `header.stamp` = when it went on the bus) and any position `defines` (joint ->
-        rad, a homing step's set_output_exact); returns the time they latch on the boards.
-
-        Each write is numbered 0, 1, ... in order; `latched_tick` in the samples is that number for the
-        command each board ran (-1 = the pre-roll hold), so a host-tick row (one per write) maps onto the
-        physics steps."""
-        latch_t = float(command.header.stamp) + self.timing.command_delay_s
-        self.boards.schedule(command, latch_t, defines, tag=self._writes)
-        self._writes += 1
-        return latch_t
+        preroll_ticks = int(round(PREROLL_S / self._dt))
+        self._first_k = -preroll_ticks
+        self._k = self._first_k
+        hold_feedforward = nominal_dynamics(start_q, np.zeros(2), np.zeros(2), self.arm)
+        self.boards.reset(self._first_k * self._dt, start_q, feedforward=hold_feedforward)
+        self._allocate(preroll_ticks + int(math.ceil(duration_s / self._dt)) + 8)
+        self._last_sample_k: int | None = None
+        self._seq = 0
+        self._writes = 0  # commands written this episode: the tag the boards report while each one runs
+        self._now = self._first_k * self._dt
+        self.advance(0.0)
 
     # ── physics ────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -309,39 +408,7 @@ class PlanarArmPlant:
             k += 1
         self._k = k
         self._now = max(self._now, float(until))
-        warnings = self._warning_count()
-        if warnings > self._warnings_seen:
-            # MuJoCo resets the state on a non-finite or exploding acceleration; the episode is no longer
-            # physical
-            self._warnings_seen = warnings
-            self.events.append(
-                {"t": self._now, "kind": "diverged", "why": "MuJoCo reset the state (bad qacc/qvel/qpos)"}
-            )
-
-    # ── the record ─────────────────────────────────────────────────────────────────────────────────────────
-
-    @property
-    def sample_count(self) -> int:
-        return max(self._k, 0)
-
-    def samples(self) -> dict[str, np.ndarray]:
-        """The plant rows recorded so far (t >= 0), copies, keyed as EpisodeLog's plant fields."""
-        rows = self.sample_count
-        return {
-            "t": self._t[:rows].copy(),
-            "q": self._q[:rows].copy(),
-            "qd": self._qd[:rows].copy(),
-            "tau": self._tau[:rows].copy(),
-            "at_cap": self._at_cap[:rows].copy(),
-            "board_mode": self._mode[:rows].copy(),
-            "tool_pos": self._tool_pos[:rows].copy(),
-            "contact_force": self._contact_force[:rows].copy(),
-            "in_contact": self._in_contact[:rows].copy(),
-            "external_force": self._external_force[:rows].copy(),
-            "tau_ff": self._tau_ff[:rows].copy(),
-            "tau_fb_board": self._tau_fb_board[:rows].copy(),
-            "latched_tick": self._latched_tick[:rows].copy(),
-        }
+        self._check_divergence()
 
     def meta(self) -> dict[str, Any]:
         """What this plant was, for EpisodeLog.meta."""
