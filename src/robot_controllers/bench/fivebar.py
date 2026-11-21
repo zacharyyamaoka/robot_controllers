@@ -18,12 +18,15 @@ bam 5bar Sim and real".
 - **Truth** (`FivebarTruth`, bam_pid_tunning `bam_fb_v2.py` DRIVES): per drive armature, Coulomb (MuJoCo
   frictionloss, it sticks: solref 0.002 and 5 noslip passes as ArmSim) and viscous damping; the closure
   stiffened as ArmSim does (solref 0.002, solimp 0.9999 0.99999). 4 kHz physics, the boards' rate.
-- **Boards.** The as-found moteus gains, kp 200 / 144 / 200 and kd 4 / 8 / 4 on the five-bar, kp 75 / kd 0.75
-  on the wrist, read in moteus units (N·m per output rev) and converted to the bench's N·m/rad (÷ 2π, as
-  bam_pid_tunning's `Gains.from_moteus`); caps 12.5 N·m (five-bar) and 2 A × 0.5087 N·m/A = 1.0174 N·m
-  (wrist); encoder 163840 counts/rev (2^14 at the rotor through the 10:1), velocity filter 400 Hz, one 4 kHz
-  tick of encoder delay (bam_fb_v2.py JMC_LOOP / GIM_LOOP). The integrator (ki) is not modelled. The bus: the
-  bench's default 5.5 ms down, 1.5 ms up (bam_fivebar RACK_BOARD) is the twin's nominal.
+- **Boards.** The gains and caps the real arm ran (`fivebar_board_config`, fullarm_jtc run
+  run_jtc-20261121T021137Z): the as-found moteus gains (kp 200 / 144 / 200, kd 4 / 8 / 4 on the five-bar, kp
+  75 / kd 0.75 on the wrist, N·m per output rev, ÷ 2π to the bench's N·m/rad as bam_pid_tunning's
+  `Gains.from_moteus`) × the scales fullarm_jtc sent with every command (j1 ×14 / ×16.8, j2 and c1 ×2.5 / ×4,
+  the wrist ×4 / ×5.33, ×4.55, ×2.71); caps 17.984 N·m on j2 and c1 (the run's raised caps), 12.5 N·m on j1, 2
+  A × 0.5087 N·m/A = 1.0174 N·m on the wrist. `as_found_board_config` keeps the boards as found. Encoder
+  163840 counts/rev (2^14 at the rotor through the 10:1), velocity filter 400 Hz, one 4 kHz tick of encoder
+  delay (bam_fb_v2.py JMC_LOOP / GIM_LOOP); the integrator is not modelled (the run sent ilimit 0). The bus:
+  the bench's default 5.5 ms down, 1.5 ms up (bam_fivebar RACK_BOARD) is the twin's nominal.
 - **Feed-forward** (`fivebar_feedforward(name, model_error)`, pure): closed-chain inverse dynamics on the six
   drives. For a drive state (q, qd, qdd) the passive hinges are solved onto the loop (`_Chain.close`, below),
   their velocities and accelerations follow from the loop constraint (S, the selection, and the constraint's
@@ -603,20 +606,59 @@ def closed_qpos(q: Any) -> np.ndarray:
 # ── the boards ─────────────────────────────────────────────────────────────────────────────────────────────
 
 
-@functools.lru_cache(maxsize=1)
-def fivebar_board_config() -> BoardConfig:
-    """The five-bar's boards as found: kp, kd from moteus units (per output rev) to N·m/rad, the caps, encoder
-    163840 counts/rev, a 400 Hz velocity filter and one tick of encoder delay, at 4 kHz."""
+# WHY the twin's nominal boards are the gains the real arm ran, not as found (dispatcher, 2026-11-20): the
+# grade is checked against real runs, so the twin runs what the real arm runs, and as found J2 has ~1.3 Hz of
+# bandwidth, which no real run uses. The run of record is DEPLOYED_REPORT, its `gains` block: fullarm_jtc sent
+# each command with these kp / kd scales on the boards' as-found gains (j1 its own; j2 / c1 the five-bar
+# drives'; w1-w3 the wrist's, wrist_gains.WRIST_TARGET_GAINS 300 N.m/rev and kd 4.0 / 3.41 / 2.03 against the
+# read-back 75 / 0.75), ilimit 0, and raised the j2 / c1 caps to 17.984 N.m (`cap_nm` for CAN 12 / 13); j1 and
+# the wrist keep DRIVES' torque_limit_nm.
+DEPLOYED_RUN = "run_jtc-20261121T021137Z-3610132"
+DEPLOYED_REPORT = (
+    "/home/bam/arm_motion_bench/outputs/runs_real/bam_fb/fullarm_jtc_model_ff_la_restload/workspace-v2/dev/"
+    f"{DEPLOYED_RUN}/report.json"
+)
+DEPLOYED_KP_SCALE: tuple[float, ...] = (14.0, 2.5, 2.5, 4.0, 4.0, 4.0)
+DEPLOYED_KD_SCALE: tuple[float, ...] = (
+    16.8,
+    4.0,
+    4.0,
+    5.333333333333333,
+    4.546666666666667,
+    2.7066666666666666,
+)
+DEPLOYED_CAP_NM: tuple[float, ...] = (12.5, 17.984, 17.984, 1.0174, 1.0174, 1.0174)
+
+
+def _board(kp_scale: tuple[float, ...], kd_scale: tuple[float, ...], caps: tuple[float, ...]) -> BoardConfig:
     truth = FIVEBAR_TRUTH
     return BoardConfig(
-        kp_nm_rad=tuple(kp / MOTEUS_RAD_PER_REV for kp in truth.kp_moteus),
-        kd_nm_s_rad=tuple(kd / MOTEUS_RAD_PER_REV for kd in truth.kd_moteus),
-        torque_cap_nm=truth.torque_cap_nm,
+        kp_nm_rad=tuple(kp / MOTEUS_RAD_PER_REV * k for kp, k in zip(truth.kp_moteus, kp_scale, strict=True)),
+        kd_nm_s_rad=tuple(
+            kd / MOTEUS_RAD_PER_REV * k for kd, k in zip(truth.kd_moteus, kd_scale, strict=True)
+        ),
+        torque_cap_nm=caps,
         rate_hz=1.0 / truth.physics_dt_s,
         encoder_delay_s=truth.encoder_delay_s,
         velocity_filter_hz=truth.velocity_filter_hz,
         encoder_counts_per_rev=truth.encoder_counts_per_rev,
     )
+
+
+@functools.lru_cache(maxsize=1)
+def as_found_board_config() -> BoardConfig:
+    """The five-bar's boards as found (bam_pid_tunning DRIVES): kp, kd from moteus units (per output rev) to
+    N·m/rad, DRIVES' caps, encoder 163840 counts/rev, a 400 Hz velocity filter and one tick of encoder delay,
+    at 4 kHz. Not the twin's nominal any more: see `fivebar_board_config`."""
+    return _board((1.0,) * 6, (1.0,) * 6, FIVEBAR_TRUTH.torque_cap_nm)
+
+
+@functools.lru_cache(maxsize=1)
+def fivebar_board_config() -> BoardConfig:
+    """The twin's nominal boards: the gains and caps the real arm ran (`DEPLOYED_RUN`): the as-found kp, kd (÷
+    2π) × the scales fullarm_jtc sent, j2 / c1 capped at 17.984 N·m; everything else as
+    `as_found_board_config`."""
+    return _board(DEPLOYED_KP_SCALE, DEPLOYED_KD_SCALE, DEPLOYED_CAP_NM)
 
 
 # ── the plant ──────────────────────────────────────────────────────────────────────────────────────────────

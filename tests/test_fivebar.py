@@ -72,7 +72,7 @@ def test_the_vendored_mjcf_is_reduced_mjcfs_output_and_loads_with_six_drives_and
 
 def test_the_drives_and_boards_are_bam_pid_tunnings_drives_in_the_benchs_units():
     source = _bam_pid_tunning()
-    board = fb.fivebar_board_config()
+    board = fb.as_found_board_config()
     by_role = {d.role.lower(): d for d in source.DRIVES}
     for j, name in enumerate(fb.FIVEBAR_JOINTS):
         drive = by_role[name]
@@ -91,6 +91,45 @@ def test_the_drives_and_boards_are_bam_pid_tunnings_drives_in_the_benchs_units()
         assert board.encoder_delay_s == drive.truth.measurement_delay_s
     home = np.radians([source.HOME_DEG[name] for name in fb.MJCF_JOINTS])
     np.testing.assert_allclose(fb.FIVEBAR_HOME_Q, home, atol=1e-15)
+
+
+DEPLOYED_REPORT = Path(fb.DEPLOYED_REPORT)
+
+
+def test_the_nominal_boards_are_the_gains_and_caps_the_real_arm_ran():
+    found, deployed = fb.as_found_board_config(), fb.fivebar_board_config()
+    if DEPLOYED_REPORT.exists():  # the oracle: the real run's own `gains` block
+        gains = json.loads(DEPLOYED_REPORT.read_text())["gains"]
+        wrist = gains["wrist"]["scales"]
+        kp_scale = (
+            gains["j1"]["kp_scale"],
+            *(gains["drives"]["kp_scale"],) * 2,
+            *(wrist[c][0] for c in ("14", "15", "16")),
+        )
+        kd_scale = (
+            gains["j1"]["kd_scale"],
+            *(gains["drives"]["kd_scale"],) * 2,
+            *(wrist[c][1] for c in ("14", "15", "16")),
+        )
+        assert fb.DEPLOYED_KP_SCALE == pytest.approx(kp_scale, rel=1e-12)
+        assert fb.DEPLOYED_KD_SCALE == pytest.approx(kd_scale, rel=1e-12)
+        caps = gains["drives"]["cap_nm"]
+        assert deployed.torque_cap_nm[1:3] == (caps["12"], caps["13"])
+    for j in range(6):
+        assert deployed.kp_nm_rad[j] == pytest.approx(found.kp_nm_rad[j] * fb.DEPLOYED_KP_SCALE[j], rel=1e-15)
+        assert deployed.kd_nm_s_rad[j] == pytest.approx(
+            found.kd_nm_s_rad[j] * fb.DEPLOYED_KD_SCALE[j], rel=1e-15
+        )
+    assert (
+        deployed.torque_cap_nm[0] == found.torque_cap_nm[0]
+        and deployed.torque_cap_nm[3:] == found.torque_cap_nm[3:]
+    )
+    assert (deployed.encoder_counts_per_rev, deployed.velocity_filter_hz, deployed.encoder_delay_s) == (
+        found.encoder_counts_per_rev,
+        found.velocity_filter_hz,
+        found.encoder_delay_s,
+    )
+    assert fb.FivebarPlant().board_config == deployed
 
 
 # ── the loop ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -361,4 +400,4 @@ def test_the_arm_registers_itself():
     assert isinstance(spec.plant(), fb.FivebarPlant)
     assert spec.feedforward("gravity", None) == fb.fivebar_feedforward("gravity")
     np.testing.assert_allclose(spec.tool_position(HOME), fb.tool_position(HOME))
-    assert math.isclose(spec.board_config().kp_nm_rad[1], 144.0 / (2.0 * math.pi))
+    assert math.isclose(spec.board_config().kp_nm_rad[1], 2.5 * 144.0 / (2.0 * math.pi))
