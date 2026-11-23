@@ -2460,7 +2460,7 @@ provides-extras = ["bench", "tracking", "site", "test"]
 
 [[package]]
 name = "robot-msgs"
-version = "0.3.0"
+version = "0.3.1"
 source = { editable = "../robot_msgs" }
 dependencies = [
     { name = "dataclass-values" },
