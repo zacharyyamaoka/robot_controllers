@@ -43,7 +43,11 @@ from robot_controllers.metrics.names import BY_NAME
 
 SCHEMA = "robot-controllers/results-1"
 REPO = Path(__file__).resolve().parents[3]
-RESULTS_DIR = REPO / "results"
+RESULTS_DIR = (  # WHY as bench/run.py: a wheel install has no checkout, so its results are ./results
+    Path(os.environ["ROBOT_CONTROLLERS_RESULTS"]) if os.environ.get("ROBOT_CONTROLLERS_RESULTS")
+    else REPO / "results" if (REPO / "pyproject.toml").is_file()
+    else Path.cwd() / "results"
+)
 REGISTRY = Path(__file__).resolve().parent / "wandb_views.json"  # report and view URLs: a rebuild updates in place
 WANDB_DIR = Path.home() / ".cache" / "robot_controllers" / "wandb"  # W&B's local run files: a cache, never the repo
 # WHY loaded by file, never imported (sim2real rigs.py, 2026-11-11): bbo.py imports only the standard library at module

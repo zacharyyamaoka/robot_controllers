@@ -26,7 +26,13 @@ from robot_controllers.core import Box, ControllerSpec
 from robot_controllers.registry import BOXES, controller, in_box
 
 REPO = Path(__file__).resolve().parents[3]
-RESULTS_DIR = REPO / "results"
+# WHY the checkout test (a wheel install has no repo): the committed ledger lives in the checkout's results/; from an
+# installed wheel REPO is site-packages' parent, so results go to ./results (or ROBOT_CONTROLLERS_RESULTS) instead.
+RESULTS_DIR = (
+    Path(os.environ["ROBOT_CONTROLLERS_RESULTS"]) if os.environ.get("ROBOT_CONTROLLERS_RESULTS")
+    else REPO / "results" if (REPO / "pyproject.toml").is_file()
+    else Path.cwd() / "results"
+)
 SCHEMA = "robot-controllers/results-1"
 
 

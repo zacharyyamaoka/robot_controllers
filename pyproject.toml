@@ -10,16 +10,31 @@ readme = "README.md"
 license = "MIT"
 authors = [{ name = "Zach Yamaoka" }]
 requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+]
 # WHY numpy + robot_msgs only: a controller is a functional core (Zach, 2026-11-11: "its a functional library so
 # the interfaces are defined by the robot_msgs types"). It must run in plain same-thread Python; the bench,
 # W&B logging and the site are extras so a deployment never pulls MuJoCo or wandb.
-dependencies = ["numpy>=1.26", "robot-msgs>=0.2.0"]
+dependencies = ["numpy>=1.26", "robot-msgs>=0.3.0"]
 
 [project.optional-dependencies]
 bench = ["mujoco==3.11.0"]
 tracking = ["wandb==0.31.0", "wandb-workspaces==0.4.13", "weave==0.54.1"]
 site = ["matplotlib>=3.8", "pillow>=10"]
 test = ["pytest>=8", "mujoco==3.11.0", "matplotlib>=3.8", "pillow>=10"]
+
+[project.urls]
+Homepage = "https://github.com/zacharyyamaoka/robot_controllers"
+Repository = "https://github.com/zacharyyamaoka/robot_controllers"
 
 [project.scripts]
 robot-controllers = "robot_controllers.bench.cli:main"
