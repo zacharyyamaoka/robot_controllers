@@ -43,6 +43,7 @@ Lookahead modes:
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -156,6 +157,12 @@ def scenario_calibration(arm: str, bus: BusTiming, host_rate_hz: float, seed: in
 
     scenario = Scenario(arm, f"{arm}/calibration", host_rate_hz, bus, ModelError(), 1.0, axis="calibration")
     rung = scenario.rung()
+    # WHY the calibration's host sends at its wake time (2026-11-24, measured by trajectory_tracking_agent's browser
+    # parity check): with the default send time (wake + the tick's measured CPU time) a simulated calibration depends on
+    # the machine's load, so the same arm, bus and rate calibrated to 10.50 ms on one host and 10.75 ms on another
+    # (wrist_2), and every "calibrated" config's score moved with it (p7s stop error 2.1 %). A simulated bus delay is a
+    # property of the bus, never of the computer running the simulation; the cache below assumed exactly that.
+    rung = dataclasses.replace(rung, timing=dataclasses.replace(rung.timing, include_compute=False))
     count = scenario.joints
     ff_model, ff_at, fb_model, fb_at, interpolation = CALIBRATION_LAYOUT
 
