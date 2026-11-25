@@ -5,6 +5,15 @@ schema = "robot-sdk-declaration/1"
 role = "library"
 layer = "leaf"
 one_line = "Feed-forward/feedback controllers as black boxes plus a Layout"
+summary = "Controllers as black boxes: a robot_msgs message in, a `ServoCommand` out, `controller.tick(state, dt)`. Joint trajectory controller (Python and C++), joint impedance. Each benchmarked on a ladder of rungs (free motion, fast motion, impacts, pushes, replanning, host stalls) for performance and cost."
+use_when = "Tracking a trajectory, impedance or compliance, choosing a controller, host vs board control."
+
+# Where to read more. github and pypi are required; the rest are what this package has.
+[links]
+github = "https://github.com/zacharyyamaoka/robot_controllers"
+pypi = "https://pypi.org/project/robot-controllers/"
+site = "https://zacharyyamaoka.github.io/robot-controllers/"
+docs = "https://github.com/zacharyyamaoka/robot_controllers/blob/main/docs/CONTRACT.md"
 
 [[consumes]]
 type = "robot_msgs.control.JointCommandSequence"
