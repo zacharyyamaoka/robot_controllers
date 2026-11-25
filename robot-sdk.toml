@@ -1,0 +1,45 @@
+# robot-sdk declaration: the shared types this package's public API takes (consumes) and gives (produces),
+# each with the symbols that are the contract. Checked against the code by robot_sdk's
+# `python -m tools.sdk_graph check` (docs/graph-schema.md in github.com/zacharyyamaoka/robot_sdk).
+schema = "robot-sdk-declaration/1"
+role = "library"
+layer = "leaf"
+one_line = "Feed-forward/feedback controllers as black boxes plus a Layout"
+
+[[consumes]]
+type = "robot_msgs.control.JointCommandSequence"
+symbols = [
+  "robot_controllers.bench.rungs.SequenceScript.sequence",
+]
+
+[[consumes]]
+type = "robot_msgs.control.ServoCommand"
+symbols = [
+  "robot_controllers.bench.plant.ServoPlant.write",
+]
+
+[[produces]]
+type = "robot_msgs.control.ServoCommand"
+symbols = [
+  "robot_controllers.core.Controller.tick",
+]
+
+[[produces]]
+type = "robot_msgs.control.ServoState"
+symbols = [
+  "robot_controllers.bench.plant.ServoPlant.read",
+]
+
+[[consumes]]
+type = "robot_msgs.sensor.JointState"
+symbols = [
+  "robot_controllers.core.Controller.tick",
+]
+
+[[consumes]]
+type = "robot_msgs.trajectory.JointTrajectory"
+symbols = [
+  "robot_controllers.controllers.layout.LayoutController",
+  "robot_controllers.controllers.layout.LayoutController.replace_input",
+  "robot_controllers.controllers.joint_trajectory.JointTrajectoryController",
+]
