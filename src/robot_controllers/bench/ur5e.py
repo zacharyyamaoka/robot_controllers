@@ -37,6 +37,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import math
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -367,10 +368,13 @@ class Ur5ePlant(ServoPlant):
     name = "ur5e"
     joint_names: tuple[str, ...] = UR5E_JOINTS
 
-    def __init__(self, *, board_config: BoardConfig | None = None, truth: Ur5eTruth = UR5E_TRUTH) -> None:
+    def __init__(self, *, board_config: BoardConfig | None = None, truth: Ur5eTruth = UR5E_TRUTH,
+                 model_factory: Callable[[float, Ur5eTruth], Any] | None = None) -> None:
         self.truth = truth
+        self._model_factory = model_factory
         super().__init__(board_config or ur5e_board_config(), truth.physics_dt_s)
         self._gravity = Ur5eFeedforward("gravity")
+        self._kinematics_data = None
 
     @property
     def home_q(self) -> tuple[float, ...]:
@@ -378,7 +382,20 @@ class Ur5ePlant(ServoPlant):
 
     def tool_position(self, q: Any) -> np.ndarray:
         """The tool site (x, y, z) for joint angles `q`, (6,) -> (3,), (N, 6) -> (N, 3)."""
-        return tool_position(q)
+        if self._model_factory is None:
+            return tool_position(q)
+        if self._model is None:
+            raise RuntimeError("reset the mounted UR5e plant before requesting tool kinematics")
+        if self._kinematics_data is None:
+            self._kinematics_data = self._mujoco.MjData(self._model)
+        data = self._kinematics_data
+        joint_rows = np.asarray(q, dtype=float)
+        positions = []
+        for joints in np.atleast_2d(joint_rows):
+            data.qpos[:] = joints
+            self._mujoco.mj_kinematics(self._model, data)
+            positions.append(data.site_xpos[self._tool_site].copy())
+        return positions[0] if joint_rows.ndim == 1 else np.asarray(positions).reshape(-1, 3)
 
     def reset(
         self,
@@ -400,13 +417,22 @@ class Ur5ePlant(ServoPlant):
         self.timing = timing or HostTiming()
         self._reset_bus(seed, self.timing)
         self.contact_calibration = None
-        model = _plant_model(float(scene.payload_kg), self.truth)
+        if self._model_factory is None:
+            model = _plant_model(float(scene.payload_kg), self.truth)
+        else:
+            model = self._model_factory(float(scene.payload_kg), self.truth)
+            names = tuple(model.joint(joint).name for joint in range(model.njnt))
+            if names != self.joint_names or model.nq != len(names) or model.nv != len(names):
+                raise ValueError("the mounted UR5e model must have exactly the six arm joints in board order")
+            if not math.isclose(model.opt.timestep, self._dt, rel_tol=0.0, abs_tol=1e-12):
+                raise ValueError("the mounted UR5e model timestep must match the board rate")
         start_q = np.asarray(scene.start_q if scene.start_q is not None else self.home_q, dtype=float)
         if start_q.shape != (len(self.joint_names),):
             raise ValueError(f"start_q must be {len(self.joint_names)} joint angles, got {start_q}")
         joint_ids = [model.joint(name).id for name in self.joint_names]
         self._model = model = self._stopped_model(model, scene, joint_ids, start_q)
         self._data = data = mujoco.MjData(model)
+        self._kinematics_data = None
         self.start_q = tuple(float(v) for v in start_q)
         data.qpos[:] = start_q
         data.qvel[:] = 0.0
@@ -417,7 +443,10 @@ class Ur5ePlant(ServoPlant):
         preroll_ticks = int(round(PREROLL_S / self._dt))
         self._first_k = -preroll_ticks
         self._k = self._first_k
-        hold = self._gravity(start_q, np.zeros_like(start_q), np.zeros_like(start_q))
+        # WHY measure gravity directly for a mounted scene: its base can be turned relative
+        # to gravity. This pre-roll is inside the plant, before the controller is given its first observation.
+        hold = (self._gravity(start_q, np.zeros_like(start_q), np.zeros_like(start_q)) if self._model_factory is None
+                else data.qfrc_bias.copy())
         self.boards.reset(self._first_k * self._dt, start_q, feedforward=hold)
         self._allocate(preroll_ticks + int(math.ceil(duration_s / self._dt)) + 8)
         self._last_sample_k: int | None = None
@@ -476,7 +505,7 @@ class Ur5ePlant(ServoPlant):
             "start_q": list(self.start_q),
             "board": asdict(self.board_config),
             "truth": asdict(self.truth),
-            "model": MODEL_PATH.name,
+            "model": MODEL_PATH.name if self._model_factory is None else "caller-supplied UR5e scene",
             "tool_site": TOOL_SITE,
             "payload_kg": float(self.scene.payload_kg),
         }

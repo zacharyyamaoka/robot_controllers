@@ -40,6 +40,20 @@ def test_the_plant_holds_home_and_records_the_tool_site_on_its_own_kinematics():
     assert plant.read().name == UR5E_JOINTS and plant.meta()["plant"] == "ur5e"
 
 
+def test_mounted_model_uses_its_gravity_with_the_same_board_loop():
+    def upside_down(payload, truth):
+        model = load_model(payload_kg=payload, truth=truth)
+        model.opt.gravity[2] *= -1
+        return model
+
+    plant = Ur5ePlant(model_factory=upside_down)
+    plant.reset(Scene(), duration_s=0.2)
+    plant.advance(0.2)
+    np.testing.assert_allclose(plant.samples()["q"][-1], UR5E_HOME_Q, atol=2e-3)
+    np.testing.assert_allclose(plant.samples()["tool_pos"], plant.tool_position(plant.samples()["q"]), atol=1e-12)
+    assert plant.meta()["model"] == "caller-supplied UR5e scene"
+
+
 def test_a_belt_or_a_push_is_refused_and_a_payload_is_a_point_mass_at_the_tool():
     plant = Ur5ePlant()
     for scene in (Scene(belt=True), Scene(pushes=(Push(0.1, 0.1, (1.0, 0.0, 0.0)),))):
